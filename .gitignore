@@ -1,0 +1,26 @@
+# Environment
+env/.env.local
+env/.env
+.env*
+
+# Conda
+environment.lock.yml
+
+# Generated outputs (images — large binaries, don't commit)
+brands/*/outputs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/
+.idea/
+*.swp

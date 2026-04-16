@@ -1,0 +1,13 @@
+name: seo-cr
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - google-adk>=1.0.0
+      - litellm>=1.0.0
+      - playwright>=1.40.0
+      - anthropic>=0.30.0
+      - google-genai>=1.0.0
