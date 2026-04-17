@@ -35,15 +35,39 @@ async def _analyze_url(url: str) -> dict:
     }
 
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True)
+        browser = await pw.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage",
+                "--disable-setuid-sandbox",
+            ],
+        )
         context = await browser.new_context(
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
+                "Chrome/124.0.0.0 Safari/537.36"
             ),
             viewport={"width": 1280, "height": 720},
+            extra_http_headers={
+                "Accept-Language": "es-MX,es;q=0.9,en;q=0.8",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept-Encoding": "gzip, deflate, br",
+                "Upgrade-Insecure-Requests": "1",
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "none",
+                "Sec-Fetch-User": "?1",
+            },
         )
+        await context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+            Object.defineProperty(navigator, 'languages', { get: () => ['es-MX', 'es', 'en'] });
+            window.chrome = { runtime: {} };
+        """)
         page = await context.new_page()
 
         try:
@@ -132,7 +156,7 @@ async def _analyze_url(url: str) -> dict:
 # ADK tool function
 # ──────────────────────────────────────────────────────────────────────────────
 
-def analyze_serp_url(url: str) -> dict:
+async def analyze_serp_url(url: str) -> dict:
     """
     Analyze a URL's SEO structure by scraping it with a headless browser.
     Extracts title tag, meta description, H1/H2/H3 headings, word count,
@@ -147,4 +171,4 @@ def analyze_serp_url(url: str) -> dict:
         internal_links_count, external_links_count, images_count, images_with_alt,
         has_schema_markup, has_video, has_table, has_list, top_word_frequencies.
     """
-    return asyncio.run(_analyze_url(url))
+    return await _analyze_url(url)

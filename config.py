@@ -71,6 +71,37 @@ CONTENT_TYPE_FOLDERS: dict[str, str] = {
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Word count limits per page type  (ideal_min, ideal_max, hard_max)
+#
+# Sources: Backlinko 11.8M results study (avg first-page = 1,447 words),
+# Yoast minimums, HubSpot/Orbit Media blog surveys, industry consensus.
+#
+# • ideal_min–ideal_max : target range the copywriter should aim for.
+# • hard_max             : absolute ceiling; QA flags CRITICAL if exceeded.
+#
+# When the research brief provides "Average Word Count" and "Recommended
+# Minimum Word Count", those override ideal_min/ideal_max respectively.
+# The hard_max is always max(page-type hard_max, research_brief_minimum × 1.2).
+# ──────────────────────────────────────────────────────────────────────────────
+
+PAGE_TYPE_WORD_LIMITS: dict[str, tuple[int, int, int]] = {
+    #                       ideal_min  ideal_max  hard_max
+    "landing-page":         (500,      1_000,     1_200),
+    "service-page":         (1_000,    2_000,     2_200),
+    "product-page":         (800,      1_500,     1_700),
+    "blog-post":            (1_500,    2_500,     2_700),
+    "about-page":           (800,      1_500,     1_700),
+    "faq":                  (800,      1_500,     1_700),
+    "pillar-page":          (3_000,    5_000,     5_500),
+    "category-page":        (500,      1_000,     1_200),
+    "home-page":            (500,      1_000,     1_200),
+}
+
+# Multiplier: hard_max_words × TOKEN_WORD_FACTOR ≈ max_output_tokens.
+# Accounts for ~1.5 tokens/word (Spanish) × ~1.4 HTML overhead × ~1.2 buffer.
+TOKEN_WORD_FACTOR = 2.5
+
+# ──────────────────────────────────────────────────────────────────────────────
 # API key helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -94,6 +125,52 @@ def load_google_key() -> str:
     return key if key else _load_key_from_env_file("GOOGLE_API_KEY")
 
 
+def _patch_litellm_retry_after() -> None:
+    """
+    Monkey-patch litellm.acompletion so that on a 429 RateLimitError it reads
+    the 'retry-after' response header and waits exactly that many seconds before
+    retrying, instead of crashing or using fixed exponential backoff.
+    """
+    try:
+        import asyncio
+        import litellm as _ll
+
+        if getattr(_ll, "_patched_retry_after", False):
+            return  # already patched
+
+        _orig_acompletion = _ll.acompletion
+
+        async def _acompletion_with_retry(*args, **kwargs):
+            max_attempts = 8
+            for attempt in range(max_attempts):
+                try:
+                    return await _orig_acompletion(*args, **kwargs)
+                except _ll.RateLimitError as exc:
+                    if attempt >= max_attempts - 1:
+                        raise
+                    # Read retry-after from the response headers
+                    wait = 60  # safe default (Anthropic resets every 60 s)
+                    resp = getattr(exc, "response", None)
+                    if resp is not None:
+                        headers = getattr(resp, "headers", {}) or {}
+                        ra = headers.get("retry-after") or headers.get("Retry-After")
+                        if ra:
+                            try:
+                                wait = int(float(ra)) + 2  # +2 s buffer
+                            except (ValueError, TypeError):
+                                pass
+                    print(
+                        f"\n  [rate limit] Anthropic rate limit hit. "
+                        f"Waiting {wait}s before retry {attempt + 1}/{max_attempts - 1}..."
+                    )
+                    await asyncio.sleep(wait)
+
+        _ll.acompletion = _acompletion_with_retry
+        _ll._patched_retry_after = True
+    except ImportError:
+        pass  # litellm not installed, nothing to patch
+
+
 def setup_env_keys() -> None:
     """Inject API keys into os.environ so ADK / LiteLLM can find them."""
     if not os.environ.get("GOOGLE_API_KEY"):
@@ -104,6 +181,8 @@ def setup_env_keys() -> None:
         k = _load_key_from_env_file("ANTHROPIC_API_KEY")
         if k:
             os.environ["ANTHROPIC_API_KEY"] = k
+
+    _patch_litellm_retry_after()
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Brand / output helpers

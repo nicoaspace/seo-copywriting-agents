@@ -19,32 +19,30 @@ Create a comprehensive Brand DNA document that will be used as the foundational 
 
 - Brand name: {brand_name}
 - Brand URL: {brand_url}
-- Website content (scraped): {scraped_content}
+
+Use the `scrape_brand_site` tool with the Brand URL above to retrieve the website content before starting your research.
 
 ## Research Steps
 
-### 1. EXTERNAL RESEARCH (use Google Search for each)
+### 1. SCRAPE THE BRAND WEBSITE (required first step)
 
-**Brand Identity & Story:**
-- Search: "{brand_name} brand story", "{brand_name} founding story", "{brand_name} mission vision values"
-- Search: "{brand_name} about us", "{brand_name} company history"
-- Search: "{brand_name} brand guidelines", "{brand_name} press kit", "{brand_name} media kit"
+Call `scrape_brand_site` with the Brand URL. This fetches the homepage and up to 15 subpages from the nav menu simultaneously. Use this content as the primary source for all on-site analysis.
 
-**Market Position:**
-- Search: "{brand_name} vs [competitor]", "{brand_name} reviews", "{brand_name} testimonials"
-- Search: "{brand_name} pricing", "{brand_name} plans", "{brand_name} customers"
-- Search: "{brand_name} case study", "{brand_name} success story"
+### 2. EXTERNAL RESEARCH — exactly 3 searches, run in ONE batch call
 
-**Industry Context:**
-- Search: "{brand_name} industry", "{brand_name} market", "{brand_name} sector"
-- Search: "best alternatives to {brand_name}", "{brand_name} competitors"
+Use `batch_web_search` to run all 3 queries **in a single call** (this runs them in parallel, much faster):
 
-**Content & Communication Style:**
-- Search: "{brand_name} blog", "{brand_name} social media", "{brand_name} LinkedIn"
-- Search: "{brand_name} advertising", "{brand_name} Meta Ad Library"
-- Search: "{brand_name} YouTube channel", "{brand_name} podcast"
+```
+batch_web_search(queries=[
+    "{brand_name} quiénes somos misión visión historia",
+    "{brand_name} clientes casos de éxito reseñas",
+    "{brand_name} competidores alternativas vs"
+])
+```
 
-### 2. ON-SITE ANALYSIS (from the scraped website content)
+Do NOT call `web_search` individually. Do NOT add more queries. 3 searches total, all via `batch_web_search`.
+
+### 3. ON-SITE ANALYSIS (from the scraped website content)
 
 **Voice and Tone Analysis:**
 - Read hero copy, headlines, CTAs across all pages
@@ -66,8 +64,8 @@ Create a comprehensive Brand DNA document that will be used as the foundational 
 - Use of lists, tables, icons
 - Storytelling vs direct communication
 
-### 3. COMPETITIVE CONTEXT
-- Search for 2-3 direct competitors
+### 4. COMPETITIVE CONTEXT (from search #3 results)
+- Identify 2-3 direct competitors found
 - Note how they position themselves differently
 - Note verbal/messaging differentiation (not visual)
 - Identify messaging gaps the brand fills
@@ -79,7 +77,7 @@ Write the complete Brand DNA document using this exact structure:
 ```
 # BRAND DNA DOCUMENT
 # {brand_name}
-# Generated: {date}
+# Generated: [today's date]
 ==================
 
 ---

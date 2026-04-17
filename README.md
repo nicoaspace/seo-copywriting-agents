@@ -147,7 +147,7 @@ python main.py --brand <BRAND> --use-dna <true|false> \
 
 ## Examples
 
-### First run for a new brand (generates Brand DNA)
+### 1. First run for a new brand (generates Brand DNA)
 
 ```bash
 python main.py \
@@ -169,6 +169,14 @@ This will:
 3. Write a service page draft using the research + brand DNA
 4. QA scores the draft → if < 80, sends feedback → copywriter rewrites (up to 3 cycles)
 5. Save final content + QA report
+
+
+### 2. Complete text
+
+```bash
+python main.py --brand "Siglo BPO" --use-dna false --url https://mexico.siglobpo.com/ --keyword "outsourcing que es" --secondary-keywords "ley de outsourcing​,outsourcing ejemplos,outsourcing que es y como funciona,prorroga reforma outsourcing 2021,ventajas y desventajas del outsourcing,tipos de outsourcing,ventajas del outsourcing,desventajas del outsourcing,outsourcing caracteristicas,outsourcing ejemplos de empresas,offsourcing,outsourcing en mexico"  --topic "Outsourcing en México: ¿Qué es y cómo funciona?"  --page-type blog-post --language es --country méxico --format html
+```
+
 
 ### Subsequent runs (reuse existing Brand DNA)
 
@@ -201,6 +209,8 @@ python main.py \
     --country usa \
     --format text
 ```
+
+
 
 ---
 

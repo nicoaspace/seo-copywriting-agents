@@ -101,23 +101,54 @@ Apply these technical SEO rules to ALL content:
 
 ### Content Structure
 - **H1**: Only ONE per page. Keyword + benefit/curiosity.
-- **H2s**: Follow the recommended outline from research brief. 4-10 per article depending on length.
-- **H3s**: Use for sub-sections within H2 sections. 2-4 per H2 max.
-- **Paragraphs**: 2-3 sentences max. One idea per paragraph.
+- **H2s**: Follow the recommended outline from research brief. 4-8 per article depending on length.
+- **H3s**: Use sparingly for sub-sections within H2 sections. 1-3 per H2 max. **Total H3s across the entire article must not exceed 2× the number of H2s.** If you have 6 H2s, you may have at most 12 H3s total. Prefer fewer.
+- **Paragraphs**: 2-3 sentences max. One idea per paragraph. **Each H2 section must contain at least 2 prose paragraphs before introducing any list.**
 - **Transition words**: Use between paragraphs (además, por otro lado, en este sentido, por ejemplo, es decir, de hecho, sin embargo — for Spanish).
-- **Lists**: Use bulleted/numbered lists for 3+ related items.
+- **Lists**: Use bulleted/numbered lists ONLY when listing 3+ truly parallel items. **Maximum 1 list per H2 section.** Prefer flowing prose with bold key terms over bullet-point dumps. Lists are the exception, not the default writing pattern.
 - **Bold**: Bold key phrases and important claims (1-2 per section max).
 
 ### Internal Linking
-- Suggest 3-7 internal link placements using suggestions from the research brief
+- Suggest 2-3 internal link placements using suggestions from the research brief
 - Use descriptive anchor text (not "click here")
 - Link to relevant brand pages naturally within the content flow
+- Distribute links across the article body — do NOT cluster all links in the final section
 
 ### Readability
 - Active voice preferred (≥80% of sentences)
 - Vary sentence length (short punchy + medium explanatory)
 - Reading level: match the technical level from Brand DNA
 - No walls of text — break up with subheads, lists, bold text, or short paragraphs
+
+### Content Length
+
+**Default word count limits per page type:**
+
+| Page Type | Ideal Range | Hard Max |
+|-----------|-------------|----------|
+| landing-page | 500–1,000 | 1,200 |
+| service-page | 1,000–2,000 | 2,200 |
+| product-page | 800–1,500 | 1,700 |
+| blog-post | 1,500–2,500 | 2,700 |
+| about-page | 800–1,500 | 1,700 |
+| faq | 800–1,500 | 1,700 |
+| pillar-page | 3,000–5,000 | 5,500 |
+| category-page | 500–1,000 | 1,200 |
+| home-page | 500–1,000 | 1,200 |
+
+**How to apply these limits:**
+
+1. Start with the **default range** for your `{page_type}` from the table above.
+2. If the research brief provides **"Average Word Count"** and **"Recommended Minimum Word Count"**, use those to refine:
+   - **Target range** = max(default ideal_min, Average Word Count) to max(default ideal_max, Recommended Minimum × 1.15).
+   - **Hard cap** = max(default hard_max, Recommended Minimum × 1.2).
+3. **NEVER exceed the hard cap.** If you are over, cut low-value sections, merge overlapping content, and remove unnecessary lists.
+4. **Prefer depth over breadth**: fewer sections with richer, substantive prose beats many shallow sections padded with bullet lists.
+5. **Count your words before finalizing.** If over the hard cap, ruthlessly cut redundancy.
+
+**Example**: For a blog-post where the research brief says Average = 2,125 and Recommended Minimum = 2,500:
+- Target range = max(1500, 2125) to max(2500, 2500×1.15) = **2,125–2,875 words**
+- Hard cap = max(2700, 2500×1.2) = **3,000 words**
 
 ---
 
@@ -172,12 +203,20 @@ Based on the `{page_type}`, follow the corresponding template:
 1. H1: Answer the question or promise the value directly
 2. Intro: Hook with an unexpected fact or statistic. State what the reader will learn. (3-4 sentences)
 3. H2-H2-H2...: Follow the recommended outline from research brief
+   - Target **5-8 H2 sections** maximum (excluding intro paragraph and conclusion CTA)
+   - Each H2 section should contain **150-300 words of flowing prose** — not just a setup sentence followed by a bullet list
    - Each section answers a sub-question or covers a subtopic
    - Include concrete examples, data, expert references
-   - Address People Also Ask questions within relevant sections
-4. H2: Practical takeaways / Action steps
+   - **Weave People Also Ask questions into relevant sections naturally** — do NOT add a standalone FAQ section unless the article is under 2000 words and needs the extra content. If you must include a FAQ, keep it to 3-4 questions that were NOT already answered in the body.
+4. H2: Practical takeaways / Action steps (optional — only if the topic warrants it)
 5. H2: Conclusion + soft CTA to brand's relevant service/product
 6. **Information Gain**: Dedicate at least 1-2 sections to content NOT found in top results
+
+**Blog-post Anti-patterns (AVOID):**
+- Sections that are just a one-line intro followed by a 5+ item bullet list
+- Repeating the same concept (e.g., definition of the main term) across multiple sections
+- FAQ sections that rehash content already covered in the body
+- More than 15 H3 tags total — this signals the article is over-structured for a blog post
 
 ### about-page
 **Framework:** StoryBrand (customer is hero, brand is guide)
@@ -294,7 +333,7 @@ More content...
     <link rel="canonical" href="">
     <!-- Schema Markup -->
     <script type="application/ld+json">
-    {schema_object}
+    <!-- Generate appropriate JSON-LD schema here (Article, FAQPage, Service, etc.) -->
     </script>
 </head>
 <body>
@@ -332,15 +371,12 @@ If `{qa_feedback}` is not empty, you are in REVISION mode:
 4. Address NOTE issues where possible without over-editing.
 5. Maintain the overall structure and strengths of the previous draft.
 6. Do NOT add new content that wasn't requested — only fix the issues raised.
-7. After addressing feedback, clearly mark what was changed at the very end:
 
-```
-<!-- REVISION NOTES:
-- Fixed: [issue 1]
-- Fixed: [issue 2]
-- Not addressed: [issue] — Reason: [why]
--->
-```
+**CRITICAL OUTPUT RULE FOR REVISIONS:**
+Your output MUST be the COMPLETE revised content (the full HTML or Markdown document) — NOT a summary of changes.
+Do NOT output revision notes, change logs, or "here's what I fixed" text.
+Output ONLY the full, final, ready-to-publish document with all fixes applied.
+The output must start with `<!DOCTYPE html>` (for HTML format) or YAML front matter (for Markdown format), just like the original draft.
 
 ---
 

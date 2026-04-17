@@ -20,8 +20,7 @@ Usage:
 
 import argparse
 import asyncio
-import re
-import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -29,7 +28,6 @@ from google.adk.agents import Agent
 from google.adk.agents.loop_agent import LoopAgent
 from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.runners import InMemoryRunner
-from google.adk.sessions import InMemorySessionService
 from google.genai import types as genai_types
 
 from config import (
@@ -39,11 +37,29 @@ from config import (
     PAGE_TYPES,
     QUALITY_THRESHOLD,
     MAX_QA_ITERATIONS,
+    GEMINI_MODEL,
+    CLAUDE_MODEL,
     setup_env_keys,
     brand_path,
     slugify,
     next_version_number,
 )
+from token_tracker import TokenTracker
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Test mode — set True to save intermediate agent outputs for debugging
+# ──────────────────────────────────────────────────────────────────────────────
+TEST_MODE = True
+
+# Global start time — set in main(), used by _ts()
+_start_time: float = 0.0
+
+
+def _ts() -> str:
+    """Return elapsed time since script start as 'Xm Ys'."""
+    elapsed = int(time.time() - _start_time)
+    m, s = divmod(elapsed, 60)
+    return f"{m}m {s:02d}s"
 from agents import (
     create_brand_dna_agent,
     create_researcher_agent,
@@ -105,7 +121,7 @@ def parse_args() -> argparse.Namespace:
 # Pipeline construction
 # ──────────────────────────────────────────────────────────────────────────────
 
-def build_pipeline(use_dna: bool) -> Agent:
+def build_pipeline(use_dna: bool, page_type: str = "blog-post") -> Agent:
     """Build the full agent pipeline."""
     sub_agents = []
 
@@ -120,7 +136,7 @@ def build_pipeline(use_dna: bool) -> Agent:
     qa_loop = LoopAgent(
         name="QALoop",
         sub_agents=[
-            create_copywriter_agent(),
+            create_copywriter_agent(page_type=page_type),
             create_qa_agent(),
         ],
         max_iterations=MAX_QA_ITERATIONS,
@@ -137,13 +153,16 @@ def build_pipeline(use_dna: bool) -> Agent:
 # Pipeline execution
 # ──────────────────────────────────────────────────────────────────────────────
 
-async def run_pipeline(args: argparse.Namespace) -> dict:
+async def run_pipeline(args: argparse.Namespace, tracker: TokenTracker) -> dict:
     """Execute the pipeline and return final state."""
 
-    pipeline = build_pipeline(use_dna=(args.use_dna == "true"))
+    pipeline = build_pipeline(
+        use_dna=(args.use_dna == "true"),
+        page_type=args.page_type,
+    )
 
-    session_service = InMemorySessionService()
-    runner = InMemoryRunner(agent=pipeline, app_name="seo-copywriting", session_service=session_service)
+    runner = InMemoryRunner(agent=pipeline, app_name="seo-copywriting")
+    session_service = runner.session_service
 
     # Prepare initial state
     initial_state = {
@@ -155,6 +174,10 @@ async def run_pipeline(args: argparse.Namespace) -> dict:
         "language": args.language,
         "country": args.country,
         "format": args.output_format,
+        "qa_feedback": "",
+        "research_brief": "",
+        "draft_content": "",
+        "brand_dna": "",
     }
 
     # Load existing brand DNA if --use-dna true
@@ -190,36 +213,102 @@ async def run_pipeline(args: argparse.Namespace) -> dict:
     if args.url:
         user_message += f"Brand URL: {args.url}\n"
 
-    print(f"\n  ▸ Running pipeline...")
+    print(f"\n  ▸ Running pipeline...\n")
+
+    _current_author: str | None = None
+    pipeline_error: Exception | None = None
+
+    # Track each iteration's outputs for debug saving
+    _iterations: list[dict] = []  # [{draft: str, qa: str}, ...]
+    _current_iter: dict = {}
+    _last_copywriter_text: str = ""
 
     # Run the pipeline
-    final_response = None
-    async for event in runner.run_async(
-        user_id="user",
-        session_id=session.id,
-        new_message=genai_types.Content(
-            role="user",
-            parts=[genai_types.Part(text=user_message)],
-        ),
-    ):
-        # Print progress events
-        if hasattr(event, "author") and event.author:
-            author = event.author
-            if hasattr(event, "content") and event.content and event.content.parts:
-                text = event.content.parts[0].text if event.content.parts[0].text else ""
-                if text:
-                    preview = text[:150].replace("\n", " ")
-                    print(f"    [{author}] {preview}...")
-        final_response = event
+    try:
+        async for event in runner.run_async(
+            user_id="user",
+            session_id=session.id,
+            new_message=genai_types.Content(
+                role="user",
+                parts=[genai_types.Part(text=user_message)],
+            ),
+        ):
+            author = getattr(event, "author", None)
+            if not author:
+                continue
 
-    # Retrieve final state from session
+            # Record token usage from this event
+            tracker.record(author, getattr(event, "usage_metadata", None))
+
+            # Print a header line when we switch to a new agent
+            if author != _current_author:
+                # When switching FROM QAAgent to another, finalize the iteration
+                if _current_author == "QAAgent" and _current_iter:
+                    _iterations.append(_current_iter)
+                    _current_iter = {}
+                _current_author = author
+                print(f"  [{_ts()}] ┌─ [{author}] started")
+
+            content = getattr(event, "content", None)
+            if not content or not content.parts:
+                continue
+
+            for part in content.parts:
+                # Tool call
+                if getattr(part, "function_call", None):
+                    fc = part.function_call
+                    args_preview = str(dict(fc.args))[:120] if fc.args else ""
+                    print(f"  [{_ts()}] │  → tool call: {fc.name}({args_preview})")
+                # Tool response
+                elif getattr(part, "function_response", None):
+                    fr = part.function_response
+                    resp_preview = str(fr.response)[:120].replace("\n", " ")
+                    print(f"  [{_ts()}] │  ← tool result: [{fr.name}] {resp_preview}")
+                # Text
+                elif getattr(part, "text", None):
+                    full_text = part.text
+                    preview = full_text[:200].replace("\n", " ")
+                    is_final = getattr(event, "is_final_response", lambda: False)
+                    if callable(is_final):
+                        is_final = is_final()
+                    marker = f"  [{_ts()}] └─" if is_final else f"  [{_ts()}] │ "
+                    print(f"{marker} {preview}{'...' if len(full_text) > 200 else ''}")
+                    if is_final:
+                        print()
+
+                    # Capture iteration outputs
+                    if author == "SEOCopywriterAgent":
+                        _last_copywriter_text = full_text
+                        _current_iter["draft"] = full_text
+                    elif author == "QAAgent" and not getattr(part, "function_call", None):
+                        _current_iter["qa"] = full_text
+
+    except Exception as exc:
+        pipeline_error = exc
+        print(f"\n  [{_ts()}] ✗ Pipeline error: {exc}")
+        print(f"  [{_ts()}] ▸ Attempting to save partial outputs...\n")
+
+    # Finalize last iteration if pending
+    if _current_iter:
+        _iterations.append(_current_iter)
+
+    # Retrieve state (even on partial failure — agents may have written to session)
     updated_session = await session_service.get_session(
         app_name="seo-copywriting",
         user_id="user",
         session_id=session.id,
     )
 
-    return dict(updated_session.state) if updated_session else {}
+    state = dict(updated_session.state) if updated_session else {}
+
+    # Attach iterations and tracker for debug saving
+    state["_iterations"] = _iterations
+    state["_tracker"] = tracker
+
+    if pipeline_error:
+        print(f"  ✘ Pipeline failed — saving partial outputs from session state.")
+
+    return state
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -227,41 +316,102 @@ async def run_pipeline(args: argparse.Namespace) -> dict:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def save_outputs(args: argparse.Namespace, state: dict) -> tuple[Path, Path | None, Path | None]:
-    """Save final content, QA report, and brand DNA (if generated). Returns paths."""
+    """Save final content, QA report, brand DNA, and (if TEST_MODE) intermediate agent outputs."""
     brand_dir = brand_path(args.brand)
     folder_name = CONTENT_TYPE_FOLDERS.get(args.page_type, args.page_type)
     output_dir = brand_dir / folder_name
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Resolve version number
+    # Resolve version number and naming components
     keyword_slug = slugify(args.keyword)
     version = next_version_number(args.brand, args.page_type, keyword_slug)
     date_str = datetime.now(timezone.utc).strftime("%Y_%m_%d")
     ext = "html" if args.output_format == "html" else "md"
     base_name = f"{date_str}__version_{version}__{keyword_slug}"
 
-    # Save content
-    content = state.get("draft_content", "")
-    content_file = output_dir / f"{base_name}.{ext}"
-    content_file.write_text(content, encoding="utf-8")
-    print(f"  ✓ Content saved: {content_file.relative_to(PROJECT_ROOT)}")
+    # Pick the best iteration (highest QA score) instead of always using the last one.
+    iterations = state.pop("_iterations", [])
 
-    # Save QA report
+    def _parse_qa_score(qa_text: str) -> int | None:
+        """Extract score from QA report text, e.g. '## Score: 93/100' → 93."""
+        import re
+        m = re.search(r"## Score:\s*(\d+)/100", qa_text)
+        return int(m.group(1)) if m else None
+
+    best_idx = len(iterations) - 1  # default: last iteration
+    best_score = -1
+    for i, it in enumerate(iterations):
+        score = _parse_qa_score(it.get("qa", ""))
+        if score is not None and score > best_score:
+            best_score = score
+            best_idx = i
+
+    if iterations and best_idx != len(iterations) - 1:
+        print(f"  ⚑ Best iteration: {best_idx + 1} (score {best_score}) — "
+              f"last iteration scored {_parse_qa_score(iterations[-1].get('qa', '')) or '?'}")
+
+    best_iter = iterations[best_idx] if iterations else {}
+    final_content = best_iter.get("draft", "") or state.get("draft_content", "")
+
+    # Save content (skip if empty)
+    content_file = output_dir / f"{base_name}.{ext}"
+    if final_content:
+        content_file.write_text(final_content, encoding="utf-8")
+        print(f"  ✓ Content saved:  {content_file.relative_to(PROJECT_ROOT)}")
+    else:
+        print(f"  ⚠ draft_content is empty — skipping content file")
+
+    # Save QA report for the best iteration
     qa_report_file = None
-    qa_report = state.get("qa_report", "")
-    if qa_report:
+    best_qa = best_iter.get("qa", "") or state.get("qa_feedback", "")
+    if best_qa:
         qa_report_file = output_dir / f"{base_name}__qa_report.md"
-        qa_report_file.write_text(qa_report, encoding="utf-8")
-        print(f"  ✓ QA Report saved: {qa_report_file.relative_to(PROJECT_ROOT)}")
+        qa_report_file.write_text(best_qa, encoding="utf-8")
+        print(f"  ✓ QA report:      {qa_report_file.relative_to(PROJECT_ROOT)}")
 
     # Save brand DNA if newly generated
     dna_file = None
     if args.use_dna == "false" and state.get("brand_dna"):
-        dna_dir = brand_dir
-        dna_dir.mkdir(parents=True, exist_ok=True)
-        dna_file = dna_dir / "brand-dna.md"
+        brand_dir.mkdir(parents=True, exist_ok=True)
+        dna_file = brand_dir / "brand-dna.md"
         dna_file.write_text(state["brand_dna"], encoding="utf-8")
-        print(f"  ✓ Brand DNA saved: {dna_file.relative_to(PROJECT_ROOT)}")
+        print(f"  ✓ Brand DNA:      {dna_file.relative_to(PROJECT_ROOT)}")
+
+    # TEST MODE: save intermediate agent outputs for debugging
+    if TEST_MODE:
+        debug_dir = output_dir / f"{base_name}__debug"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save brand DNA and research brief
+        for key, filename in [
+            ("brand_dna", "01_brand_dna.md"),
+            ("research_brief", "02_research_brief.md"),
+        ]:
+            val = state.get(key, "")
+            if val:
+                p = debug_dir / filename
+                p.write_text(val, encoding="utf-8")
+                print(f"  ✓ [TEST] {key:<18} → {p.relative_to(PROJECT_ROOT)}")
+
+        # Save each iteration's draft and QA report
+        for i, it in enumerate(iterations, 1):
+            draft = it.get("draft", "")
+            qa = it.get("qa", "")
+            if draft:
+                p = debug_dir / f"iteration_{i}_draft.{ext}"
+                p.write_text(draft, encoding="utf-8")
+                print(f"  ✓ [TEST] iteration_{i}_draft  → {p.relative_to(PROJECT_ROOT)}")
+            if qa:
+                p = debug_dir / f"iteration_{i}_qa.md"
+                p.write_text(qa, encoding="utf-8")
+                print(f"  ✓ [TEST] iteration_{i}_qa     → {p.relative_to(PROJECT_ROOT)}")
+
+        # Save token usage report
+        tracker: TokenTracker | None = state.get("_tracker")
+        if tracker and tracker.records:
+            p = debug_dir / "token_usage.md"
+            p.write_text(tracker.render_markdown(), encoding="utf-8")
+            print(f"  ✓ [TEST] token_usage          → {p.relative_to(PROJECT_ROOT)}")
 
     return content_file, qa_report_file, dna_file
 
@@ -271,6 +421,9 @@ def save_outputs(args: argparse.Namespace, state: dict) -> tuple[Path, Path | No
 # ──────────────────────────────────────────────────────────────────────────────
 
 def main():
+    global _start_time
+    _start_time = time.time()
+
     args = parse_args()
 
     # Setup API keys in environment
@@ -291,10 +444,18 @@ def main():
     print(f"  Format:     {args.output_format}")
     print(f"{'='*60}")
 
-    # Run pipeline
-    state = asyncio.run(run_pipeline(args))
+    # Initialize token tracker with agent → model mappings
+    tracker = TokenTracker(agent_models={
+        "BrandDNAAgent": GEMINI_MODEL,
+        "SEOResearcherAgent": GEMINI_MODEL,
+        "SEOCopywriterAgent": CLAUDE_MODEL,
+        "QAAgent": GEMINI_MODEL,
+    })
 
-    # Save outputs
+    # Run pipeline (always returns state, even on partial failure)
+    state = asyncio.run(run_pipeline(args, tracker))
+
+    # Save outputs (always, even partial)
     print(f"\n{'='*60}")
     print(f"Saving outputs...")
     print(f"{'='*60}")

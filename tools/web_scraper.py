@@ -4,13 +4,16 @@ Web Scraper Tool — Playwright-based website scraping for Brand DNA extraction.
 Wrapped as a Google ADK-compatible tool function.
 """
 
-import re
 import asyncio
+import re
+import urllib.parse
 from typing import Optional
 
 from playwright.async_api import async_playwright
 
 from config import PAGE_TIMEOUT_MS, MAX_SCRAPED_CHARS
+
+MAX_SUBPAGES = 14  # homepage + up to 14 subpages = 15 total
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -24,57 +27,136 @@ def _clean_text(raw: str) -> str:
     return text
 
 
-def _find_nav_links(page_content: str, base_url: str) -> list[str]:
-    import urllib.parse
-    patterns = [
-        r'href=["\']([^"\']*(?:about|pricing|product|plans|features|tour|services|solutions|contact|team|blog)[^"\']*)["\']',
-    ]
-    urls = set()
-    for pat in patterns:
-        for match in re.finditer(pat, page_content, re.IGNORECASE):
-            href = match.group(1)
-            full = urllib.parse.urljoin(base_url, href)
-            if urllib.parse.urlparse(full).netloc == urllib.parse.urlparse(base_url).netloc:
-                urls.add(full)
-    return list(urls)[:5]
+def _url_label(url: str, fallback: str = "subpage") -> str:
+    """Derive a short label from a URL path segment."""
+    path = url.rstrip("/").split("/")[-1] or fallback
+    return re.sub(r'[^a-z0-9-]', '', path.lower()) or fallback
 
 
-async def _scrape_single_page(page, url: str, label: str) -> tuple[str, str]:
+async def _extract_nav_links(page, base_url: str) -> list[str]:
+    """Extract unique same-domain links from nav/header/menu elements via JS."""
+    base_netloc = urllib.parse.urlparse(base_url).netloc
+    raw_links: list[str] = await page.evaluate("""() => {
+        const selectors = [
+            'nav a', 'header a',
+            '[class*="menu"] a', '[class*="nav"] a',
+            '[id*="menu"] a', '[id*="nav"] a',
+            '[role="navigation"] a'
+        ];
+        const seen = new Set();
+        const results = [];
+        for (const sel of selectors) {
+            for (const el of document.querySelectorAll(sel)) {
+                const href = el.href;
+                if (href && !seen.has(href)) {
+                    seen.add(href);
+                    results.push(href);
+                }
+            }
+        }
+        return results;
+    }""")
+
+    filtered = []
+    for link in raw_links:
+        parsed = urllib.parse.urlparse(link)
+        if (
+            parsed.netloc == base_netloc
+            and parsed.scheme in ("http", "https")
+            and not link.endswith((".pdf", ".jpg", ".jpeg", ".png", ".zip", ".gif", ".svg"))
+            and "#" not in link.split("?")[0]  # skip anchor-only / fragment links
+        ):
+            filtered.append(link)
+
+    # deduplicate while preserving order
+    return list(dict.fromkeys(filtered))[:MAX_SUBPAGES]
+
+
+async def _scrape_single_page(context, url: str, label: str) -> tuple[str, str]:
+    page = await context.new_page()
     try:
         await page.goto(url, wait_until="networkidle", timeout=PAGE_TIMEOUT_MS)
-        await page.wait_for_timeout(2000)
+        await page.wait_for_timeout(1500)
         text = await page.evaluate("() => document.body.innerText")
         return label, _clean_text(text)
     except Exception as e:
         return label, f"[Failed to load: {e}]"
+    finally:
+        await page.close()
 
 
 async def _scrape_site(url: str) -> dict[str, str]:
-    pages_content = {}
+    pages_content: dict[str, str] = {}
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True)
+        browser = await pw.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage",
+                "--disable-setuid-sandbox",
+            ],
+        )
         context = await browser.new_context(
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
+                "Chrome/124.0.0.0 Safari/537.36"
             ),
             viewport={"width": 1280, "height": 720},
+            locale="es-MX",
+            extra_http_headers={
+                "Accept-Language": "es-MX,es;q=0.9,en;q=0.8",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept-Encoding": "gzip, deflate, br",
+                "Upgrade-Insecure-Requests": "1",
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "none",
+                "Sec-Fetch-User": "?1",
+            },
         )
-        page = await context.new_page()
+        await context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+            Object.defineProperty(navigator, 'languages', { get: () => ['es-MX', 'es', 'en'] });
+            window.chrome = { runtime: {} };
+        """)
 
-        label, text = await _scrape_single_page(page, url, "homepage")
-        pages_content[label] = text
+        # ── Step 1: homepage (needs its own page to extract nav links from) ──
+        homepage = await context.new_page()
+        try:
+            await homepage.goto(url, wait_until="networkidle", timeout=PAGE_TIMEOUT_MS)
+            await homepage.wait_for_timeout(1500)
+            home_text = await homepage.evaluate("() => document.body.innerText")
+            pages_content["homepage"] = _clean_text(home_text)
+            subpage_urls = await _extract_nav_links(homepage, url)
+        except Exception as e:
+            pages_content["homepage"] = f"[Failed to load homepage: {e}]"
+            subpage_urls = []
+        finally:
+            await homepage.close()
 
-        html = await page.content()
-        subpage_urls = _find_nav_links(html, url)
-
+        # ── Step 2: scrape all subpages in PARALLEL ──
+        tasks = []
+        seen_labels: set[str] = {"homepage"}
         for sub_url in subpage_urls:
-            path = sub_url.rstrip("/").split("/")[-1] or "subpage"
-            path = re.sub(r'[^a-z0-9-]', '', path.lower()) or "subpage"
-            if path not in pages_content:
-                label, text = await _scrape_single_page(page, sub_url, path)
-                pages_content[label] = text
+            label = _url_label(sub_url)
+            # make label unique if collision
+            base_label, i = label, 2
+            while label in seen_labels:
+                label = f"{base_label}-{i}"
+                i += 1
+            seen_labels.add(label)
+            tasks.append(_scrape_single_page(context, sub_url, label))
+
+        if tasks:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for result in results:
+                if isinstance(result, Exception):
+                    continue
+                lbl, txt = result
+                pages_content[lbl] = txt
 
         await browser.close()
     return pages_content
@@ -84,7 +166,7 @@ async def _scrape_site(url: str) -> dict[str, str]:
 # ADK tool function
 # ──────────────────────────────────────────────────────────────────────────────
 
-def scrape_brand_site(url: str) -> dict:
+async def scrape_brand_site(url: str) -> dict:
     """
     Scrape a brand's website (homepage + discovered subpages) using a headless browser.
     Returns a dict with page labels as keys and their visible text content as values.
@@ -96,4 +178,4 @@ def scrape_brand_site(url: str) -> dict:
     Returns:
         dict with keys like "homepage", "about", "pricing" and text content as values.
     """
-    return asyncio.run(_scrape_site(url))
+    return await _scrape_site(url)
