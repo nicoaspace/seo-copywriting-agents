@@ -174,7 +174,7 @@ This will:
 ### 2. Complete text
 
 ```bash
-python main.py --brand "Siglo BPO" --use-dna false --url https://mexico.siglobpo.com/ --keyword "outsourcing que es" --secondary-keywords "ley de outsourcing​,outsourcing ejemplos,outsourcing que es y como funciona,prorroga reforma outsourcing 2021,ventajas y desventajas del outsourcing,tipos de outsourcing,ventajas del outsourcing,desventajas del outsourcing,outsourcing caracteristicas,outsourcing ejemplos de empresas,offsourcing,outsourcing en mexico"  --topic "Outsourcing en México: ¿Qué es y cómo funciona?"  --page-type blog-post --language es --country méxico --format html
+python main.py --brand "Siglo BPO" --use-dna true --url https://mexico.siglobpo.com/ --keyword "outsourcing que es" --secondary-keywords "ley de outsourcing​,outsourcing ejemplos,outsourcing que es y como funciona,prorroga reforma outsourcing 2021,ventajas y desventajas del outsourcing,tipos de outsourcing,ventajas del outsourcing,desventajas del outsourcing,outsourcing caracteristicas,outsourcing ejemplos de empresas,offsourcing,outsourcing en mexico"  --topic "Outsourcing en México: ¿Qué es y cómo funciona?"  --page-type blog-post --language es --country méxico --format html
 ```
 
 
@@ -305,7 +305,7 @@ seo-copywriting-agents/
 ├── skills/
 │   ├── brand_dna_skill.md   # Brand DNA agent instructions
 │   ├── researcher_skill.md  # Researcher agent instructions
-│   ├── copywriter_skill.md  # Copywriter agent instructions
+│   ├── copywriting-redactor/ # Copywriter skill (SKILL.md + references/)
 │   └── qa_skill.md          # QA agent instructions
 ├── brands/                  # Auto-created output directory
 │   └── <brand>/

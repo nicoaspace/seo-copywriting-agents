@@ -48,6 +48,7 @@ MAX_SCRAPED_CHARS  = 30_000
 
 PAGE_TYPES = (
     "landing-page",
+    "sales-page",
     "service-page",
     "product-page",
     "blog-post",
@@ -55,11 +56,14 @@ PAGE_TYPES = (
     "faq",
     "pillar-page",
     "category-page",
+    "case-study",
+    "pricing-page",
     "home-page",
 )
 
 CONTENT_TYPE_FOLDERS: dict[str, str] = {
     "landing-page":  "landing-pages",
+    "sales-page":    "sales-pages",
     "service-page":  "service-pages",
     "product-page":  "product-pages",
     "blog-post":     "blog-posts",
@@ -67,6 +71,8 @@ CONTENT_TYPE_FOLDERS: dict[str, str] = {
     "faq":           "faqs",
     "pillar-page":   "pillar-pages",
     "category-page": "category-pages",
+    "case-study":    "case-studies",
+    "pricing-page":  "pricing-pages",
     "home-page":     "home-pages",
 }
 
@@ -87,13 +93,16 @@ CONTENT_TYPE_FOLDERS: dict[str, str] = {
 PAGE_TYPE_WORD_LIMITS: dict[str, tuple[int, int, int]] = {
     #                       ideal_min  ideal_max  hard_max
     "landing-page":         (500,      1_000,     1_200),
+    "sales-page":           (2_000,    4_000,     5_000),
     "service-page":         (1_000,    2_000,     2_200),
     "product-page":         (800,      1_500,     1_700),
     "blog-post":            (1_500,    2_500,     2_700),
     "about-page":           (800,      1_500,     1_700),
-    "faq":                  (800,      1_500,     1_700),
+    "faq":                  (1_000,    2_000,     2_500),
     "pillar-page":          (3_000,    5_000,     5_500),
     "category-page":        (500,      1_000,     1_200),
+    "case-study":           (800,      1_500,     1_700),
+    "pricing-page":         (500,      1_000,     1_200),
     "home-page":            (500,      1_000,     1_200),
 }
 
@@ -220,6 +229,20 @@ def next_version_number(brand_name: str, page_type: str, keyword_slug: str) -> i
 
 
 def load_skill(skill_name: str) -> str:
-    """Load a skill markdown from skills/ directory."""
+    """Load a skill from skills/ directory.
+
+    If *skill_name* points to a directory, reads SKILL.md as the main
+    instruction and appends every .md file found under references/.
+    If it points to a single .md file, reads it directly.
+    """
     path = SKILLS_DIR / skill_name
+    if path.is_dir():
+        main_file = path / "SKILL.md"
+        parts = [main_file.read_text(encoding="utf-8")]
+        refs_dir = path / "references"
+        if refs_dir.is_dir():
+            for ref in sorted(refs_dir.glob("*.md")):
+                parts.append(f"\n\n---\n\n# Reference: {ref.stem}\n\n")
+                parts.append(ref.read_text(encoding="utf-8"))
+        return "".join(parts)
     return path.read_text(encoding="utf-8")

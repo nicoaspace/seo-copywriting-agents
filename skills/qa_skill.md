@@ -117,13 +117,16 @@ Review the Brand DNA's Voice Adjectives [5] and evaluate whether the content ref
 | Page Type | Default Ideal Range | Default Hard Max |
 |-----------|---------------------|------------------|
 | landing-page | 500–1,000 | 1,200 |
+| sales-page | 2,000–4,000 | 5,000 |
 | service-page | 1,000–2,000 | 2,200 |
 | product-page | 800–1,500 | 1,700 |
 | blog-post | 1,500–2,500 | 2,700 |
 | about-page | 800–1,500 | 1,700 |
-| faq | 800–1,500 | 1,700 |
+| faq | 1,000–2,000 | 2,500 |
 | pillar-page | 3,000–5,000 | 5,500 |
 | category-page | 500–1,000 | 1,200 |
+| case-study | 800–1,500 | 1,700 |
+| pricing-page | 500–1,000 | 1,200 |
 | home-page | 500–1,000 | 1,200 |
 
 - If the research brief provides "Average Word Count" and "Recommended Minimum Word Count", calculate:
@@ -255,6 +258,11 @@ Use this reference to verify the draft follows the correct framework for its `{p
 **Framework:** AIDA (Attention → Interest → Desire → Action) + Cialdini triggers
 **Expected sections:** H1 (keyword + benefit) → Hero paragraph (pain point) → Problem amplification → Solution introduction → Key benefits (3-5) → Social proof → How it works (3-step) → FAQ → Final CTA
 
+### sales-page
+**Framework:** PAS / PASO (Problem → Agitation → Solution → Outcome) + long-form persuasion
+**Expected sections:** H1 (outcome-driven headline) → Hook (pain amplification) → Problem deep-dive → Agitation → Solution reveal → Features as benefits → Social proof / case studies → Objection handling → Risk reversal (guarantee) → Price justification → Primary CTA → FAQ → Final CTA
+**Note:** Sales pages are longer (2,000–4,000 words). Verify the content earns its length — every section should advance the sale.
+
 ### service-page
 **Framework:** Problem → Solution → Proof → Action
 **Expected sections:** H1 (service + outcome) → Intro → Problem detail → Service overview → Features/benefits → How it works → Who benefits → Differentiators → FAQ → CTA
@@ -274,7 +282,9 @@ Use this reference to verify the draft follows the correct framework for its `{p
 
 ### faq
 **Framework:** Direct answers + Schema-ready
-**Expected sections:** H1 → Brief intro → H2 per question (direct answer first, then expansion) → CTA
+**Expected sections:** H1 → Brief intro → H2 categories (if 8+ questions) → H3 per question (direct answer first, then expansion) → Catch-all CTA
+**Schema:** Must include FAQPage JSON-LD schema markup if format is HTML.
+**Anti-patterns to flag:** Questions nobody would actually ask, answers that don't answer the question, marketing copy disguised as FAQ answers, no category grouping for 10+ questions.
 
 ### pillar-page
 **Framework:** Topic Authority + Comprehensive Guide
@@ -283,6 +293,16 @@ Use this reference to verify the draft follows the correct framework for its `{p
 ### category-page
 **Framework:** User intent matching + Navigation aid
 **Expected sections:** H1 → Intro → Category overview → Types/subcategories → How to choose → FAQ → CTA
+
+### case-study
+**Framework:** Situation → Challenge → Solution → Results (SCSR)
+**Expected sections:** H1 (result-driven title) → Snapshot/summary box (client, industry, key metric) → Challenge/problem → Solution/approach → Implementation → Results (quantified) → Client quote/testimonial → Key takeaways → CTA
+**Anti-patterns to flag:** No quantified results, vague descriptions of what was done, missing client context, results without before/after comparison.
+
+### pricing-page
+**Framework:** Value justification + Friction removal
+**Expected sections:** H1 (value framing, not just "Pricing") → Intro (who it's for + value summary) → Pricing tiers/plans (with clear differentiation) → Feature comparison table → FAQ (billing, cancellation, refunds) → Social proof → CTA
+**Anti-patterns to flag:** No value framing (just a price table), missing FAQ for common billing questions, tiers without clear differentiation, no CTA.
 
 ### home-page
 **Framework:** Value proposition + StoryBrand + AIDA

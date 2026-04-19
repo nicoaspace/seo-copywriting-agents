@@ -5,7 +5,7 @@ description: >
   The skill instructions have been split into individual files under skills/:
     - skills/brand_dna_skill.md    (Phase 1: Brand DNA)
     - skills/researcher_skill.md   (Phase 2: SEO Research)
-    - skills/copywriter_skill.md   (Phase 3: Copywriting)
+    - skills/copywriting-redactor/  (Phase 3: Copywriting — folder-based skill with references)
     - skills/qa_skill.md           (Phase 4: Quality Assurance)
   Run the pipeline with: python main.py --help
 ---

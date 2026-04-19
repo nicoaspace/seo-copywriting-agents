@@ -27,7 +27,7 @@ def _max_tokens_for_page_type(page_type: str) -> int:
 
 
 def create_copywriter_agent(page_type: str = "blog-post") -> Agent:
-    instruction = load_skill("copywriter_skill.md")
+    instruction = load_skill("copywriting-redactor")
 
     return Agent(
         name="SEOCopywriterAgent",
