@@ -9,7 +9,7 @@ from google.adk.agents import Agent
 from google.genai import types
 
 from config import GEMINI_MODEL, load_skill
-from tools.web_search import web_search, batch_web_search
+from tools.web_search import batch_web_search
 from tools.web_scraper import scrape_brand_site
 
 
@@ -25,7 +25,7 @@ def create_brand_dna_agent() -> Agent:
             "messaging, and tone of voice for SEO copywriting."
         ),
         instruction=instruction,
-        tools=[web_search, batch_web_search, scrape_brand_site],
+        tools=[batch_web_search, scrape_brand_site],
         output_key="brand_dna",
         generate_content_config=types.GenerateContentConfig(
             temperature=0.2,

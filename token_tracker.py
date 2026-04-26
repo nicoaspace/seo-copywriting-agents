@@ -17,8 +17,6 @@ from datetime import datetime, timezone
 PRICING: dict[str, dict[str, float]] = {
     # Gemini 2.5 Flash  (as of 2025-06)
     "gemini-2.5-flash": {"input": 0.15, "output": 0.60},
-    # Claude 3.5 Haiku  (as of 2025-06)
-    "claude-3-5-haiku-latest": {"input": 0.80, "output": 4.00},
     # Claude Sonnet 4   (as of 2025-06)
     "anthropic/claude-sonnet-4-20250514": {"input": 3.00, "output": 15.00},
 }
@@ -63,16 +61,8 @@ class TokenTracker:
         if usage_metadata is None:
             return
         inp = getattr(usage_metadata, "prompt_token_count", 0) or 0
-        # Gemini uses candidates_token_count; other providers may use response_token_count
-        out = (
-            getattr(usage_metadata, "candidates_token_count", None)
-            or getattr(usage_metadata, "response_token_count", None)
-            or 0
-        )
+        out = getattr(usage_metadata, "response_token_count", 0) or 0
         tot = getattr(usage_metadata, "total_token_count", 0) or (inp + out)
-        # Derive output from total if still 0 but total > input
-        if out == 0 and tot > inp:
-            out = tot - inp
         if inp == 0 and out == 0:
             return
         model = self.agent_models.get(agent, "unknown")

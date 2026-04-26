@@ -19,14 +19,15 @@ Create a comprehensive Brand DNA document that will be used as the foundational 
 
 - Brand name: {brand_name}
 - Brand URL: {brand_url}
+- Language: {language}
 
-Use the `scrape_brand_site` tool with the Brand URL above to retrieve the website content before starting your research.
+Use the `scrape_brand_site` tool with the Brand URL **and the language code** above to retrieve the website content before starting your research. Passing `language` ensures the browser requests the correct localized variant of the brand's site.
 
 ## Research Steps
 
 ### 1. SCRAPE THE BRAND WEBSITE (required first step)
 
-Call `scrape_brand_site` with the Brand URL. This fetches the homepage and up to 15 subpages from the nav menu simultaneously. Use this content as the primary source for all on-site analysis.
+Call `scrape_brand_site(url={brand_url}, language={language})`. This fetches the homepage and up to 15 subpages from the nav menu simultaneously, using the correct browser locale and Accept-Language headers for the target language. Use this content as the primary source for all on-site analysis.
 
 ### 2. EXTERNAL RESEARCH — exactly 3 searches, run in ONE batch call
 

@@ -107,6 +107,7 @@ Service pages target mid-to-high intent keywords. They're critical for local SEO
 | B2C service | Transformation + before/after + emotional testimonials |
 
 ---
+---
 
 ## Anti-patterns to Avoid
 

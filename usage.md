@@ -1,0 +1,180 @@
+# Usage — SEO Copywriting Agents
+
+Quick-reference for all CLI arguments and common command patterns.
+
+---
+
+## Full Syntax
+
+```bash
+python main.py \
+    --brand <BRAND> \
+    --use-dna <true|false> \
+    --use-sitemap <true|false> \
+    --keyword <PRIMARY_KEYWORD> \
+    --topic <TOPIC> \
+    --page-type <PAGE_TYPE> \
+    --country <COUNTRY> \
+    [--url <BRAND_URL>] \
+    [--sitemap-url <SITEMAP_XML_URL>] \
+    [--secondary-keywords <KW1,KW2,...>] \
+    [--language <es|en>] \
+    [--format <text|html>] \
+    [--internal-links <URL1,URL2,...>]
+```
+
+---
+
+## Arguments
+
+| Argument | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `--brand` | Yes | — | Brand identifier. Maps to `brands/<brand>/` folder |
+| `--use-dna` | Yes | — | `true` = load existing `brand-dna.md`; `false` = generate new (requires `--url`) |
+| `--url` | If `--use-dna false` | — | Brand website URL used to generate the Brand DNA |
+| `--use-sitemap` | Yes | — | `true` = load existing `url_inventory.json`; `false` = re-fetch sitemap (requires `--sitemap-url`) |
+| `--sitemap-url` | If `--use-sitemap false` | — | Brand sitemap XML URL. Creates/overwrites `sitemap_config.json` and regenerates `url_inventory.json` |
+| `--keyword` | Yes | — | Primary SEO keyword |
+| `--secondary-keywords` | No | `""` | Comma-separated secondary keywords |
+| `--topic` | Yes | — | Content topic / article subject |
+| `--page-type` | Yes | — | Page type (see table below) |
+| `--language` | No | `es` | Content language: `es` or `en` |
+| `--country` | Yes | — | Target country for tropicalization and geo-filtered search |
+| `--format` | No | `text` | Output: `text` (Markdown) or `html` (semantic HTML + JSON-LD) |
+| `--internal-links` | No | `""` | Comma-separated URLs to embed as internal links. Each appears once, distributed. Overrides inventory-based links. |
+
+---
+
+## `--use-dna` / `--use-sitemap` Decision Matrix
+
+| Scenario | Flags |
+|----------|-------|
+| Very first run for a brand | `--use-dna false --url <URL>` + `--use-sitemap false --sitemap-url <SITEMAP>` |
+| DNA exists, need fresh sitemap | `--use-dna true` + `--use-sitemap false --sitemap-url <SITEMAP>` |
+| DNA exists, sitemap up-to-date | `--use-dna true` + `--use-sitemap true` |
+| New DNA needed, sitemap up-to-date | `--use-dna false --url <URL>` + `--use-sitemap true` |
+
+---
+
+## Supported Page Types
+
+| Value | Output Folder |
+|-------|---------------|
+| `home-page` | `home-pages/` |
+| `landing-page` | `landing-pages/` |
+| `sales-page` | `sales-pages/` |
+| `service-page` | `service-pages/` |
+| `product-page` | `product-pages/` |
+| `pricing-page` | `pricing-pages/` |
+| `blog-post` | `blog-posts/` |
+| `about-page` | `about-pages/` |
+| `faq` | `faqs/` |
+| `pillar-page` | `pillar-pages/` |
+| `category-page` | `category-pages/` |
+| `case-study` | `case-studies/` |
+
+---
+
+## Common Examples
+
+### First run — new brand, new sitemap inventory
+```bash
+python main.py \
+    --brand "Siglo BPO" \
+    --use-dna false --url https://siglo.com \
+    --use-sitemap false --sitemap-url https://siglo.com/sitemap.xml \
+    --keyword "outsourcing que es" \
+    --topic "Outsourcing en México: ¿Qué es y cómo funciona?" \
+    --page-type blog-post \
+    --language es --country méxico --format html
+```
+
+### Normal run — DNA and inventory already exist
+```bash
+python main.py \
+    --brand "Siglo BPO" \
+    --use-dna true \
+    --use-sitemap true \
+    --keyword "asesoría contable" \
+    --topic "Asesoría contable para empresas en México" \
+    --page-type service-page \
+    --language es --country méxico --format html
+```
+
+### Refresh sitemap only — DNA already exists
+```bash
+python main.py \
+    --brand "Siglo BPO" \
+    --use-dna true \
+    --use-sitemap false --sitemap-url https://siglo.com/sitemap.xml \
+    --keyword "outsourcing nómina" \
+    --topic "Outsourcing de nómina en México" \
+    --page-type service-page \
+    --language es --country méxico --format html
+```
+
+### With manually specified internal links
+```bash
+python main.py \
+    --brand "Siglo BPO" \
+    --use-dna true --use-sitemap true \
+    --keyword "outsourcing nómina" \
+    --topic "Outsourcing de nómina en México" \
+    --page-type service-page \
+    --language es --country méxico --format html \
+    --internal-links "https://siglo.com/nomina,https://siglo.com/rrhh"
+```
+
+### English content
+```bash
+python main.py \
+    --brand acme \
+    --use-dna false --url https://acme.com \
+    --use-sitemap false --sitemap-url https://acme.com/sitemap.xml \
+    --keyword "project management software" \
+    --secondary-keywords "task management,team collaboration,agile tools" \
+    --topic "best project management software for small teams" \
+    --page-type blog-post \
+    --language en --country usa --format html
+```
+
+---
+
+## Per-Brand Setup Files
+
+For each brand, two files live in `brands/<brand>/`:
+
+### `sitemap_config.json` (auto-generated by `--use-sitemap false`)
+```json
+{
+  "brand_name": "Siglo BPO",
+  "base_domain": "https://siglo.com",
+  "sitemap_urls": ["https://siglo.com/sitemap.xml"],
+  "exclude_patterns": ["/wp-content/", "/wp-admin/", "/feed/", "/tag/", "/author/"]
+}
+```
+
+### `url_inventory.json` (auto-generated, do not edit manually)
+Cached index of all brand URLs with title and meta description. Consumed by the researcher agent to suggest real internal links.
+
+> Add `url_inventory.json` to `.gitignore` — regenerate it with `--use-sitemap false` when the brand publishes new pages.
+
+---
+
+## Output Files
+
+```
+brands/<brand>/
+├── brand-dna.md
+├── sitemap_config.json
+├── url_inventory.json              ← gitignored
+└── <page-type-folder>/
+    ├── YYYY_MM_DD__version_N__keyword_slug.html
+    ├── YYYY_MM_DD__version_N__keyword_slug__qa_report.md
+    └── YYYY_MM_DD__version_N__keyword_slug__debug/
+        ├── 01_brand_dna.md
+        ├── 02_research_brief.md
+        ├── iteration_1_draft.html
+        ├── iteration_1_qa.md
+        └── token_usage.md
+```

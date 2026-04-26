@@ -15,6 +15,36 @@ from config import PAGE_TIMEOUT_MS, MAX_SCRAPED_CHARS
 
 MAX_SUBPAGES = 14  # homepage + up to 14 subpages = 15 total
 
+# Locale & Accept-Language headers per supported language code.
+# Used to make Playwright request the correct localized variant of brand sites.
+LOCALE_BY_LANGUAGE: dict[str, tuple[str, str, list[str]]] = {
+    # language: (locale, Accept-Language header, navigator.languages JS array)
+    "es":    ("es-MX", "es-MX,es;q=0.9,en;q=0.8",     ["es-MX", "es", "en"]),
+    "es-mx": ("es-MX", "es-MX,es;q=0.9,en;q=0.8",     ["es-MX", "es", "en"]),
+    "es-es": ("es-ES", "es-ES,es;q=0.9,en;q=0.8",     ["es-ES", "es", "en"]),
+    "es-co": ("es-CO", "es-CO,es;q=0.9,en;q=0.8",     ["es-CO", "es", "en"]),
+    "es-ar": ("es-AR", "es-AR,es;q=0.9,en;q=0.8",     ["es-AR", "es", "en"]),
+    "en":    ("en-US", "en-US,en;q=0.9",              ["en-US", "en"]),
+    "en-us": ("en-US", "en-US,en;q=0.9",              ["en-US", "en"]),
+    "en-gb": ("en-GB", "en-GB,en;q=0.9",              ["en-GB", "en"]),
+}
+
+
+def _resolve_locale(language: str) -> tuple[str, str, list[str]]:
+    """Resolve (locale, Accept-Language header, navigator.languages) for a language code.
+
+    Falls back to the base language (e.g. "es-XX" → "es") and finally to Spanish if unknown.
+    """
+    if not language:
+        return LOCALE_BY_LANGUAGE["es"]
+    key = language.lower()
+    if key in LOCALE_BY_LANGUAGE:
+        return LOCALE_BY_LANGUAGE[key]
+    base = key.split("-", 1)[0]
+    if base in LOCALE_BY_LANGUAGE:
+        return LOCALE_BY_LANGUAGE[base]
+    return LOCALE_BY_LANGUAGE["es"]
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Internal helpers
@@ -85,7 +115,8 @@ async def _scrape_single_page(context, url: str, label: str) -> tuple[str, str]:
         await page.close()
 
 
-async def _scrape_site(url: str) -> dict[str, str]:
+async def _scrape_site(url: str, language: str = "es") -> dict[str, str]:
+    locale, accept_language, nav_languages = _resolve_locale(language)
     pages_content: dict[str, str] = {}
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(
@@ -104,9 +135,9 @@ async def _scrape_site(url: str) -> dict[str, str]:
                 "Chrome/124.0.0.0 Safari/537.36"
             ),
             viewport={"width": 1280, "height": 720},
-            locale="es-MX",
+            locale=locale,
             extra_http_headers={
-                "Accept-Language": "es-MX,es;q=0.9,en;q=0.8",
+                "Accept-Language": accept_language,
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
                 "Accept-Encoding": "gzip, deflate, br",
                 "Upgrade-Insecure-Requests": "1",
@@ -116,11 +147,12 @@ async def _scrape_site(url: str) -> dict[str, str]:
                 "Sec-Fetch-User": "?1",
             },
         )
-        await context.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-            Object.defineProperty(navigator, 'languages', { get: () => ['es-MX', 'es', 'en'] });
-            window.chrome = { runtime: {} };
+        # Inject navigator.languages dynamically based on the resolved language.
+        await context.add_init_script(f"""
+            Object.defineProperty(navigator, 'webdriver', {{ get: () => undefined }});
+            Object.defineProperty(navigator, 'plugins', {{ get: () => [1, 2, 3, 4, 5] }});
+            Object.defineProperty(navigator, 'languages', {{ get: () => {nav_languages!r} }});
+            window.chrome = {{ runtime: {{}} }};
         """)
 
         # ── Step 1: homepage (needs its own page to extract nav links from) ──
@@ -166,7 +198,7 @@ async def _scrape_site(url: str) -> dict[str, str]:
 # ADK tool function
 # ──────────────────────────────────────────────────────────────────────────────
 
-async def scrape_brand_site(url: str) -> dict:
+async def scrape_brand_site(url: str, language: str = "es") -> dict:
     """
     Scrape a brand's website (homepage + discovered subpages) using a headless browser.
     Returns a dict with page labels as keys and their visible text content as values.
@@ -174,8 +206,14 @@ async def scrape_brand_site(url: str) -> dict:
 
     Args:
         url: The brand's main website URL (e.g. "https://example.com")
+        language: Language code controlling browser locale and Accept-Language headers.
+                  Use "es" for Spanish brands or "en" for English brands. Sub-locales
+                  like "es-MX", "es-ES", "es-CO", "es-AR", "en-US", "en-GB" are also
+                  supported. Pass the same language you will use for the generated
+                  copy so brand sites that serve regional variants return the right
+                  version. Defaults to "es".
 
     Returns:
         dict with keys like "homepage", "about", "pricing" and text content as values.
     """
-    return await _scrape_site(url)
+    return await _scrape_site(url, language=language)
