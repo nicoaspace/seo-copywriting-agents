@@ -8,6 +8,13 @@ from tools.web_scraper import scrape_brand_site
 from tools.serp_analyzer import analyze_serp_url
 from tools.fact_checker import fact_check_claim
 from tools.internal_link_analyzer import analyze_internal_links
+from tools.sitemap_fetcher import (
+    build_url_inventory,
+    load_url_inventory,
+    SitemapErrorBudgetExceeded,
+)
+from tools.word_counter import count_draft_words
+from tools.link_resolver import get_allowed_internal_links
 
 __all__ = [
     "web_search",
@@ -18,4 +25,9 @@ __all__ = [
     "analyze_serp_url",
     "fact_check_claim",
     "analyze_internal_links",
+    "build_url_inventory",
+    "load_url_inventory",
+    "SitemapErrorBudgetExceeded",
+    "count_draft_words",
+    "get_allowed_internal_links",
 ]

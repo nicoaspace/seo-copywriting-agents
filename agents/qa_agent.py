@@ -15,6 +15,40 @@ from google.genai import types
 
 from config import GEMINI_MODEL, QUALITY_THRESHOLD, load_skill
 from tools.fact_checker import fact_check_claim
+from tools.word_counter import count_draft_words
+
+
+def _parse_word_count_targets(research_brief: str) -> tuple[float | None, int | None]:
+    """Extract 'Average Word Count' and 'Recommended Minimum Word Count' from
+    the research brief markdown. Returns (avg, recommended_min); each may be
+    None if not found."""
+    avg: float | None = None
+    rec_min: int | None = None
+    if not research_brief:
+        return avg, rec_min
+
+    m_avg = re.search(
+        r"Average\s+Word\s+Count[^\d]*([\d.,]+)",
+        research_brief,
+        re.IGNORECASE,
+    )
+    if m_avg:
+        try:
+            avg = float(m_avg.group(1).replace(",", ""))
+        except ValueError:
+            avg = None
+
+    m_rec = re.search(
+        r"Recommended\s+Minimum\s+Word\s+Count[^\d]*~?\s*([\d,]+)",
+        research_brief,
+        re.IGNORECASE,
+    )
+    if m_rec:
+        try:
+            rec_min = int(m_rec.group(1).replace(",", ""))
+        except ValueError:
+            rec_min = None
+    return avg, rec_min
 
 
 def exit_loop(tool_context: ToolContext) -> dict:
@@ -115,49 +149,119 @@ def _validate_structure(draft: str, output_format: str) -> dict:
 
 
 def _before_qa_callback(callback_context: CallbackContext) -> None:
-    """Run deterministic structural validation before the QA LLM scores the draft."""
+    """Run deterministic structural + word-count validation before the QA LLM
+    scores the draft."""
     state = callback_context.state
     draft = state.get("draft_content", "") or ""
     fmt = state.get("format", "text") or "text"
     result = _validate_structure(draft, fmt)
     # Inject a short, prompt-friendly summary that the QA skill references.
     state["structural_validation"] = result["summary"]
+
+    # Word-count pre-flight: deterministic numeric check against the research
+    # brief's SERP average + recommended minimum. The QA prompt references
+    # this as {word_count_validation} so the LLM cannot skip it.
+    research_brief = state.get("research_brief", "") or ""
+    avg, rec_min = _parse_word_count_targets(research_brief)
+    wc = count_draft_words(
+        draft=draft,
+        output_format=fmt,
+        avg_word_count=avg,
+        recommended_min=rec_min,
+    )
+    state["word_count_metrics"] = wc
+    state["word_count_validation"] = (
+        f"WORD COUNT: {wc['verdict']} "
+        f"(status={wc['status']})"
+    )
     return None
 
 
 def _after_qa_callback(callback_context: CallbackContext) -> None:
     """Programmatic safety net: exit the loop if QA score >= threshold,
-    even when the LLM forgets to call the exit_loop tool."""
-    qa_text = callback_context.state.get("qa_feedback", "")
-    if not qa_text:
-        return None
-    # Tolerant regex: matches "Score: 85/100", "**Score:** 85 / 100", etc.
-    match = re.search(
-        r"[*\s]*[Ss]core[:\s*]+(\d+)\s*/\s*100\b",
+    even when the LLM forgets to call the exit_loop tool.
+
+    IMPORTANT: ADK's BaseAgent._handle_after_agent_callback only emits the
+    event carrying our action flags if the callback either returns content
+    OR writes a state delta. Setting `actions.escalate = True` alone is
+    silently dropped by the framework. We therefore always write a small
+    state value so the event is emitted with the escalate flag attached.
+    """
+    qa_text = callback_context.state.get("qa_feedback", "") or ""
+
+    # Robust score parsing (C2). Strategy, in priority order:
+    #   1. Final/Overall/Total Score: NN/100   — the canonical headline.
+    #   2. A standalone line that begins with "Score:" or "**Score:**".
+    #   3. The LAST occurrence of "Score: NN/100" (the summary at the bottom
+    #      of a long report). The previous implementation took the FIRST
+    #      occurrence, which could match a per-category sub-score and approve
+    #      content below the threshold.
+    # In all cases we additionally validate that the parsed value is a sane
+    # integer in [0, 100]; otherwise we treat the report as unparseable.
+    score: int | None = None
+
+    def _coerce(raw: str) -> int | None:
+        try:
+            v = int(raw)
+        except (TypeError, ValueError):
+            return None
+        return v if 0 <= v <= 100 else None
+
+    m = re.search(
+        r"(?:Final|Overall|Total)\s+[Ss]core[\s:*]+(\d{1,3})\s*/\s*100\b",
         qa_text,
     )
-    if match and int(match.group(1)) >= QUALITY_THRESHOLD:
+    if m:
+        score = _coerce(m.group(1))
+
+    if score is None:
+        m = re.search(
+            r"^\s*\**\s*[Ss]core[\s:*]+(\d{1,3})\s*/\s*100\b",
+            qa_text,
+            re.MULTILINE,
+        )
+        if m:
+            score = _coerce(m.group(1))
+
+    if score is None:
+        matches = list(
+            re.finditer(r"[Ss]core[\s:*]+(\d{1,3})\s*/\s*100\b", qa_text)
+        )
+        if matches:
+            score = _coerce(matches[-1].group(1))
+
+    # Secondary signal: explicit "Verdict: APPROVED" line.
+    verdict_approved = bool(
+        re.search(r"[Vv]erdict[\s:*]+APPROVED\b", qa_text)
+    )
+
+    should_exit = (
+        (score is not None and score >= QUALITY_THRESHOLD)
+        or verdict_approved
+    )
+
+    # Persist parse results for auditability and — crucially — to force ADK
+    # to emit the after-agent event carrying our escalate flag.
+    callback_context.state["qa_last_parsed_score"] = (
+        score if score is not None else -1
+    )
+    callback_context.state["qa_last_verdict_approved"] = verdict_approved
+    callback_context.state["qa_should_exit"] = should_exit
+
+    if should_exit:
         callback_context.actions.escalate = True
     return None
 
 
-def _humanizer_filename(language: str) -> str:
-    """Resolve which humanizer skill file to load for the given language code."""
-    lang = (language or "es").lower().split("-", 1)[0]
-    if lang == "en":
-        return "humanizer_english.md"
-    return "humanizer_spanish.md"
-
-
 def create_qa_agent(language: str = "es") -> Agent:
-    qa_skill = load_skill("qa_skill.md")
-    humanizer_skill = load_skill(_humanizer_filename(language))
-
-    instruction = (
-        qa_skill
-        + "\n\n"
-        + humanizer_skill
-    )
+    # C1: do NOT concatenate the humanizer skill here. The humanizer is a
+    # post-draft style filter for the Copywriter; loading it into the QA
+    # agent dilutes the QA skill's attention across ~30 unrelated style
+    # rules and produces inconsistent, off-topic feedback. QA evaluates
+    # objective criteria (brand, ethics, SEO, content, facts, language,
+    # info gain) — humanization is the writer's concern.
+    del language  # parameter retained for API compatibility
+    instruction = load_skill("qa_skill.md")
 
     return Agent(
         name="QAAgent",
@@ -170,7 +274,7 @@ def create_qa_agent(language: str = "es") -> Agent:
         ),
         instruction=instruction,
         include_contents="none",
-        tools=[fact_check_claim, exit_loop],
+        tools=[fact_check_claim, count_draft_words, exit_loop],
         output_key="qa_feedback",
         before_agent_callback=_before_qa_callback,
         after_agent_callback=_after_qa_callback,

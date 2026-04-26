@@ -274,6 +274,11 @@ async def _build_url_inventory_async(brand_folder: Path) -> tuple[list[dict], li
 
         print(f"  ▸ {len(all_entries)} URLs after filtering (cap={MAX_INVENTORY_URLS})")
 
+        # Snapshot the inventory size BEFORE the title-fetch stage so the
+        # cumulative-loss check at the end can compare against the discovered
+        # baseline rather than only the title-stage attempts (C7).
+        title_stage_baseline = len(all_entries)
+
         # 3. Fetch titles + meta descriptions in parallel
         print(f"  ▸ Fetching titles/descriptions (concurrency={SITEMAP_FETCH_CONCURRENCY})...")
         sem = asyncio.Semaphore(SITEMAP_FETCH_CONCURRENCY)
@@ -300,6 +305,31 @@ async def _build_url_inventory_async(brand_folder: Path) -> tuple[list[dict], li
             threshold=SITEMAP_FAILURE_THRESHOLD,
             failures=failures,
         )
+
+    # C7: cumulative-loss check across BOTH stages combined. Each per-stage
+    # check above can pass at 14% while the combined loss reaches ~28% of the
+    # originally discovered URLs, silently degrading internal-linking quality.
+    # Here we count every URL that ended up unusable (sitemap parse failed OR
+    # title enrichment failed) against the original discovery baseline.
+    if title_stage_baseline:
+        # URLs that survived to the title stage but failed enrichment.
+        unusable_titles = title_failures
+        # The sitemap stage failures are independent (they were never added
+        # to all_entries), so cumulative loss must be expressed against the
+        # *discovered* baseline, not the post-filter one.
+        cumulative_baseline = title_stage_baseline + sitemap_failures
+        cumulative_failed = sitemap_failures + unusable_titles
+        if (
+            cumulative_baseline
+            and cumulative_failed / cumulative_baseline > SITEMAP_FAILURE_THRESHOLD
+        ):
+            raise SitemapErrorBudgetExceeded(
+                stage="cumulative",
+                attempts=cumulative_baseline,
+                failed=cumulative_failed,
+                threshold=SITEMAP_FAILURE_THRESHOLD,
+                failures=failures,
+            )
 
     return all_entries, failures
 

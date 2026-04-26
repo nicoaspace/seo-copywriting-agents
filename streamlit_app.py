@@ -35,6 +35,7 @@ from config import (
     PAGE_TYPES,
     PROJECT_ROOT,
     brand_path,
+    check_api_keys,
     setup_env_keys,
 )
 from token_tracker import TokenTracker
@@ -140,6 +141,7 @@ def _build_args_namespace(form: dict) -> argparse.Namespace:
         output_format=form["output_format"],
         internal_links=(form.get("internal_links") or "").strip(),
         use_sitemap="true" if form["use_sitemap"] else "false",
+        funnel_stage=form.get("funnel_stage") or "auto",
     )
 
     # Apply the same input sanitization the CLI does, then dedupe internal links.
@@ -216,6 +218,7 @@ def _build_cli_command(args: argparse.Namespace) -> list[str]:
     """Build a CLI command equivalent to the form inputs."""
     cmd = [
         sys.executable,
+        "-u",  # force unbuffered stdout/stderr so output streams in real-time
         str(PROJECT_ROOT / "main.py"),
         "--brand", args.brand,
         "--use-dna", args.use_dna,
@@ -226,6 +229,7 @@ def _build_cli_command(args: argparse.Namespace) -> list[str]:
         "--language", args.language,
         "--country", args.country,
         "--format", args.output_format,
+        "--funnel-stage", args.funnel_stage,
     ]
 
     if args.url:
@@ -253,18 +257,149 @@ def _read_log_tail(path: str | None, max_chars: int = 20000) -> str:
     return text[-max_chars:]
 
 
+# Patterns that match main.py's save_outputs() print lines:
+#   "  ✓ Content saved:  brands/Brand/page-type/file.html"
+#   "  ✓ QA report:      brands/Brand/page-type/file.md"
+#   "  ✓ Brand DNA:      brands/Brand/brand-dna.md"
+_LOG_CONTENT_RE = re.compile(r"✓ Content saved:\s+(.+)")
+_LOG_QA_RE      = re.compile(r"✓ QA report:\s+(.+)")
+_LOG_DNA_RE     = re.compile(r"✓ Brand DNA:\s+(.+)")
+
+
 def _extract_saved_paths_from_log(log_text: str) -> dict[str, str]:
     """Best-effort parse of saved output paths printed by main.py."""
     out: dict[str, str] = {}
     for line in log_text.splitlines():
-        line = line.strip()
-        if line.startswith("Content:"):
-            out["content"] = line.split("Content:", 1)[1].strip()
-        elif line.startswith("QA:"):
-            out["qa"] = line.split("QA:", 1)[1].strip()
-        elif line.startswith("DNA:"):
-            out["dna"] = line.split("DNA:", 1)[1].strip()
+        m = _LOG_CONTENT_RE.search(line)
+        if m:
+            out["content"] = m.group(1).strip()
+            continue
+        m = _LOG_QA_RE.search(line)
+        if m:
+            out["qa"] = m.group(1).strip()
+            continue
+        m = _LOG_DNA_RE.search(line)
+        if m:
+            out["dna"] = m.group(1).strip()
     return out
+
+
+def _start_process_log_pump(proc: subprocess.Popen, state: dict) -> threading.Thread:
+    """Pump subprocess stdout to log file, in-memory buffer, and server console."""
+    lock: threading.Lock = state["log_lock"]
+    handle = state.get("log_handle")
+
+    def _pump() -> None:
+        stream = proc.stdout
+        if stream is None:
+            return
+        for line in iter(stream.readline, ""):
+            if not line:
+                break
+            if handle:
+                try:
+                    handle.write(line)
+                    handle.flush()
+                except Exception:
+                    pass
+            # Keep server terminal visibility like before.
+            try:
+                print(line, end="")
+            except Exception:
+                pass
+            with lock:
+                state["log_buffer"] = (state.get("log_buffer", "") + line)[-200000:]
+
+        try:
+            stream.close()
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_pump, name="streamlit-pipeline-log-pump", daemon=True)
+    t.start()
+    return t
+
+
+def _derive_runtime_status(log_text: str) -> dict:
+    """Infer pipeline progress, phases, and transitions from live log text."""
+    txt = log_text or ""
+
+    # Agent starts seen in event stream lines like: [1m 07s] ┌─ [SEOResearcherAgent] started
+    agent_seq = re.findall(r"\[(BrandDNAAgent|SEOResearcherAgent|SEOCopywriterAgent|QAAgent)\]\s+started", txt)
+
+    copywriter_runs = len(re.findall(r"\[SEOCopywriterAgent\]\s+started", txt))
+    qa_runs = len(re.findall(r"\[QAAgent\]\s+started", txt))
+    loop_iter = max(copywriter_runs, qa_runs)
+
+    # Detect setup milestones
+    sitemap_regen = "--use-sitemap false: regenerating URL inventory" in txt
+    sitemap_done = "Inventory saved:" in txt
+    dna_loaded = "Loaded existing Brand DNA" in txt
+    saving_outputs = "Saving outputs..." in txt or "Attempting to save partial outputs" in txt
+    completed = "Pipeline complete!" in txt
+    errored = "Traceback (most recent call last):" in txt or "Pipeline error:" in txt
+
+    # Determine current stage text
+    if completed:
+        current_stage = "Completado"
+    elif errored:
+        current_stage = "Error en ejecución"
+    elif agent_seq:
+        current_stage = f"Agente activo: {agent_seq[-1]}"
+    elif sitemap_regen and not sitemap_done:
+        current_stage = "Generando inventario del sitemap"
+    elif sitemap_done:
+        current_stage = "Inventario de URLs generado"
+    elif dna_loaded:
+        current_stage = "Brand DNA cargado"
+    else:
+        current_stage = "Inicializando pipeline"
+
+    # Progress is approximate but stable and useful for UX.
+    progress = 0.05
+    if dna_loaded:
+        progress = max(progress, 0.15)
+    if sitemap_regen:
+        progress = max(progress, 0.20)
+    if sitemap_done:
+        progress = max(progress, 0.35)
+    if "SEOResearcherAgent" in agent_seq:
+        progress = max(progress, 0.50)
+    if copywriter_runs > 0:
+        progress = max(progress, 0.60)
+    if qa_runs > 0:
+        progress = max(progress, 0.70)
+    if loop_iter > 0:
+        progress = max(progress, min(0.92, 0.70 + (loop_iter * 0.07)))
+    if saving_outputs:
+        progress = max(progress, 0.95)
+    if completed:
+        progress = 1.0
+
+    # Collapse repeated consecutive agent names for clean transition view.
+    transitions: list[str] = []
+    for a in agent_seq:
+        if not transitions or transitions[-1] != a:
+            transitions.append(a)
+
+    return {
+        "current_stage": current_stage,
+        "progress": progress,
+        "copywriter_runs": copywriter_runs,
+        "qa_runs": qa_runs,
+        "loop_iter": loop_iter,
+        "transitions": transitions,
+        "flags": {
+            "dna_loaded": dna_loaded,
+            "sitemap_done": sitemap_done,
+            "research_started": "SEOResearcherAgent" in agent_seq,
+            "copywriter_started": copywriter_runs > 0,
+            "qa_started": qa_runs > 0,
+            "saving_outputs": saving_outputs,
+            "completed": completed,
+            "errored": errored,
+        },
+    }
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -282,6 +417,18 @@ st.caption(
     "Pipeline multi-agente para generar copy SEO. "
     "Esta UI envuelve el mismo pipeline del CLI (`python main.py`)."
 )
+
+# C4: Validate API keys at app startup so the user gets immediate feedback
+# instead of waiting 30+ minutes for an auth error mid-pipeline.
+_missing_keys = check_api_keys()
+if _missing_keys:
+    st.error(
+        "❌ Faltan claves de API requeridas: "
+        + ", ".join(f"`{k}`" for k in _missing_keys)
+        + ". Defínelas como variables de entorno o en `env/.env.local` "
+        "antes de ejecutar el pipeline."
+    )
+    st.stop()
 
 # Crisper, larger text inside selectboxes & their dropdown menus.
 st.markdown(
@@ -332,6 +479,9 @@ if "run_state" not in st.session_state:
         "process": None,
         "log_path": None,
         "log_handle": None,
+        "log_buffer": "",
+        "log_lock": threading.Lock(),
+        "reader_thread": None,
         "last_exit_code": None,
         "last_args": None,
         "cancelled": False,
@@ -470,13 +620,34 @@ with content_left:
     )
 
 with content_right:
-    row_a, row_b, row_c = st.columns(3)
+    row_a, row_b, row_c, row_d = st.columns(4)
     with row_a:
         page_type = st.selectbox("Page type *", list(PAGE_TYPES), index=list(PAGE_TYPES).index("blog-post"), disabled=is_running)
     with row_b:
         language = st.selectbox("Language *", ["es", "en"], index=0, disabled=is_running)
     with row_c:
         output_format = st.selectbox("Format *", ["html", "text"], index=0, disabled=is_running)
+    with row_d:
+        funnel_stage = st.selectbox(
+            "Funnel stage",
+            ["auto", "TOFU", "MOFU", "BOFU"],
+            index=0,
+            disabled=is_running,
+            help=(
+                "**auto** — el Researcher analiza el intent y el SERP y elige la etapa óptima "
+                "(TOFU / MOFU / BOFU). Úsalo cuando no tengas preferencia.\n\n"
+                "**TOFU** (Awareness) — contenido educativo, sin presión de venta.\n\n"
+                "**MOFU** (Consideration) — comparativo / consultivo, CTAs suaves.\n\n"
+                "**BOFU** (Decision) — conversión directa, CTAs fuertes."
+            ),
+        )
+
+    # Visual badge that confirms the resolved mode (auto vs manual).
+    if funnel_stage == "auto":
+        st.caption("🤖 Funnel stage: **auto** — el Researcher lo recomendará")
+    else:
+        _stage_labels = {"TOFU": "🟢 Awareness", "MOFU": "🟡 Consideration", "BOFU": "🔴 Decision"}
+        st.caption(f"📌 Funnel stage fijo: **{funnel_stage}** — {_stage_labels.get(funnel_stage, '')}")
 
     country = st.text_input("Country *", placeholder="Ej. méxico", disabled=is_running)
     internal_links = st.text_area(
@@ -516,6 +687,10 @@ with ctrl_col2:
     elif run_state.get("last_exit_code") not in (None, 0):
         st.error(f"La última ejecución terminó con código {run_state.get('last_exit_code')}.")
 
+if run_state.get("last_args"):
+    with st.expander("Parámetros enviados", expanded=False):
+        st.json(run_state["last_args"])
+
 if cancel_clicked and is_running:
     proc = run_state.get("process")
     if proc is not None:
@@ -535,10 +710,18 @@ if cancel_clicked and is_running:
         except Exception:
             pass
 
+    reader = run_state.get("reader_thread")
+    if reader is not None:
+        try:
+            reader.join(timeout=1)
+        except Exception:
+            pass
+
     st.session_state.run_state.update({
         "is_running": False,
         "process": None,
         "log_handle": None,
+        "reader_thread": None,
         "last_exit_code": -1,
         "cancelled": True,
     })
@@ -559,6 +742,7 @@ if submitted:
         "country": country,
         "output_format": output_format,
         "internal_links": internal_links,
+        "funnel_stage": funnel_stage,
     }
 
     errors = _validate(form)
@@ -569,8 +753,7 @@ if submitted:
         st.stop()
 
     args = _build_args_namespace(form)
-    with st.expander("Parámetros enviados", expanded=False):
-        st.json({k: v for k, v in vars(args).items()})
+    args_dict = {k: v for k, v in vars(args).items()}
 
     setup_env_keys()
 
@@ -579,26 +762,38 @@ if submitted:
     run_dir.mkdir(parents=True, exist_ok=True)
     ts = int(time.time())
     log_path = run_dir / f"run_{ts}.log"
-    log_handle = log_path.open("w", encoding="utf-8")
+    log_handle = log_path.open("w", encoding="utf-8", buffering=1)
+
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"  # belt-and-suspenders unbuffering
+    env["PYTHONIOENCODING"] = "utf-8:replace"  # consistent UTF-8 output
 
     proc = subprocess.Popen(
         cmd,
         cwd=str(PROJECT_ROOT),
-        stdout=log_handle,
+        stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        env=os.environ.copy(),
+        env=env,
         text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
     )
 
-    st.session_state.run_state.update({
+    next_state = {
         "is_running": True,
         "process": proc,
         "log_path": str(log_path),
         "log_handle": log_handle,
+        "log_buffer": "",
         "last_exit_code": None,
-        "last_args": vars(args),
+        "last_args": args_dict,
         "cancelled": False,
-    })
+        "start_time": time.time(),
+    }
+    st.session_state.run_state.update(next_state)
+    reader = _start_process_log_pump(proc, st.session_state.run_state)
+    st.session_state.run_state["reader_thread"] = reader
     st.rerun()
 
 # Monitor in-flight process state
@@ -608,14 +803,57 @@ if is_running:
     proc = run_state.get("process")
     rc = proc.poll() if proc is not None else 1
 
-    st.status("Ejecutando pipeline…", expanded=True, state="running")
-    current_log = _read_log_tail(run_state.get("log_path"))
+    elapsed_s = int(time.time() - run_state.get("start_time", time.time()))
+    elapsed_str = f"{elapsed_s // 60}m {elapsed_s % 60:02d}s" if elapsed_s >= 60 else f"{elapsed_s}s"
+    st.status(f"Ejecutando pipeline… ⏱ {elapsed_str}", expanded=True, state="running")
+    with run_state["log_lock"]:
+        current_log = run_state.get("log_buffer", "")
+    if not current_log:
+        current_log = _read_log_tail(run_state.get("log_path"))
+
+    runtime = _derive_runtime_status(current_log)
+    st.progress(runtime["progress"], text=runtime["current_stage"])
+
+    f = runtime["flags"]
+    state_lines = [
+        f"{'✅' if f['dna_loaded'] else '⏳'} Brand DNA",
+        f"{'✅' if f['sitemap_done'] else '⏳'} Sitemap/Inventory",
+        f"{'✅' if f['research_started'] else '⏳'} Researcher",
+        f"{'✅' if f['copywriter_started'] else '⏳'} Copywriter",
+        f"{'✅' if f['qa_started'] else '⏳'} QA",
+        f"{'✅' if f['saving_outputs'] else '⏳'} Guardado",
+    ]
+    # Show the funnel stage that was submitted for this run.
+    _run_funnel = (run_state.get("last_args") or {}).get("funnel_stage", "auto")
+    _funnel_icon = "🤖" if _run_funnel == "auto" else "📌"
+    state_lines.append(f"{_funnel_icon} Funnel: {_run_funnel}")
+    st.caption(" | ".join(state_lines))
+
+    if runtime["loop_iter"] > 0:
+        st.caption(
+            f"Loop Copywriter↔QA: iteración {runtime['loop_iter']} "
+            f"(Copywriter: {runtime['copywriter_runs']} | QA: {runtime['qa_runs']})"
+        )
+
+    if runtime["transitions"]:
+        if len(runtime["transitions"]) >= 2:
+            last_transition = f"{runtime['transitions'][-2]} → {runtime['transitions'][-1]}"
+            st.caption(f"Transición más reciente: {last_transition}")
+        st.caption("Ruta de agentes: " + " → ".join(runtime["transitions"]))
+
     st.code(current_log or "(sin salida aún)", language="text")
 
     if rc is None:
-        time.sleep(1)
+        time.sleep(0.7)
         st.rerun()
     else:
+        reader = run_state.get("reader_thread")
+        if reader is not None:
+            try:
+                reader.join(timeout=2)
+            except Exception:
+                pass
+
         handle = run_state.get("log_handle")
         if handle:
             try:
@@ -627,6 +865,7 @@ if is_running:
             "is_running": False,
             "process": None,
             "log_handle": None,
+            "reader_thread": None,
             "last_exit_code": rc,
         })
         st.rerun()
@@ -635,15 +874,48 @@ if is_running:
 if not st.session_state.run_state.get("is_running") and st.session_state.run_state.get("log_path"):
     final_log = _read_log_tail(st.session_state.run_state.get("log_path"), max_chars=50000)
     if final_log:
-        st.subheader("Log de la última ejecución")
-        st.code(final_log, language="text")
+        last_exit = st.session_state.run_state.get("last_exit_code")
+        if last_exit == 0:
+            st.success("Pipeline completado correctamente")
+        elif last_exit is not None:
+            st.error(f"Pipeline terminó con error (código {last_exit})")
 
         paths = _extract_saved_paths_from_log(final_log)
         if paths:
-            st.markdown("**Archivos detectados en el log:**")
+            st.subheader("Archivos generados")
+
+            # Content file
             if paths.get("content"):
-                st.markdown(f"- Content: `{paths['content']}`")
+                content_path = PROJECT_ROOT / paths["content"]
+                st.markdown(f"**Contenido:** `{paths['content']}`")
+                if content_path.exists():
+                    content_text = content_path.read_text(encoding="utf-8", errors="replace")
+                    if paths["content"].endswith(".html"):
+                        with st.expander("Ver contenido HTML", expanded=True):
+                            st.components.v1.html(content_text, height=600, scrolling=True)
+                        with st.expander("Ver código fuente HTML"):
+                            st.code(content_text, language="html")
+                    else:
+                        with st.expander("Ver contenido", expanded=True):
+                            st.markdown(content_text)
+
+            # QA report
             if paths.get("qa"):
-                st.markdown(f"- QA: `{paths['qa']}`")
+                qa_path = PROJECT_ROOT / paths["qa"]
+                st.markdown(f"**QA Report:** `{paths['qa']}`")
+                if qa_path.exists():
+                    qa_text = qa_path.read_text(encoding="utf-8", errors="replace")
+                    with st.expander("Ver QA Report", expanded=False):
+                        st.markdown(qa_text)
+
+            # Brand DNA
             if paths.get("dna"):
-                st.markdown(f"- DNA: `{paths['dna']}`")
+                dna_path = PROJECT_ROOT / paths["dna"]
+                st.markdown(f"**Brand DNA:** `{paths['dna']}`")
+                if dna_path.exists():
+                    dna_text = dna_path.read_text(encoding="utf-8", errors="replace")
+                    with st.expander("Ver Brand DNA", expanded=False):
+                        st.markdown(dna_text)
+
+        with st.expander("Log de la última ejecución", expanded=False):
+            st.code(final_log, language="text")

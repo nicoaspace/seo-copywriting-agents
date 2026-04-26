@@ -28,3 +28,6 @@ desktop.ini
 
 # brands
 brands/*
+
+# Logs
+.streamlit_runs/

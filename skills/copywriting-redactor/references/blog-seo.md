@@ -5,6 +5,34 @@
 
 ---
 
+## Guiding Principle — Write Prose, Not Slide Decks
+
+A blog post is an argument built paragraph by paragraph, not a stack of bulleted lists. The most common failure mode in AI-generated SEO content is over-listing: every section ends with a `<ul>` of 4-6 short items, which fragments ideas, kills voice, and makes the article read like a checklist instead of writing.
+
+**Default to prose.** A real journalist or expert writing this article would explain things in flowing paragraphs, weaving examples and reasoning together. Bullets are a last resort, used only when they're genuinely the clearest format.
+
+### When a list is acceptable
+
+Use a bulleted list **only** when ALL three are true:
+1. The items are truly parallel (same grammatical shape, same level of abstraction).
+2. The reader will scan, not read sequentially.
+3. Turning them into a sentence would force awkward repetition ("...includes X, Y, Z, A, B, and C").
+
+Good candidates: a comparison table; a Pros/Cons block in an evaluative article; a checklist of concrete requirements; a quick-summary card; a Pricing FAQ.
+
+Bad candidates (rewrite as prose): "benefits of X", "what is included", "reasons to choose Y", "key features", "types of Z", "common situations", "who should use this". These almost always read better as 2-3 short paragraphs with examples than as 5 single-line bullets.
+
+### Hard caps for blog content
+
+- **At most one bulleted list per ~500 words** of body copy.
+- **Never two consecutive lists** separated only by an H2/H3.
+- **No 1-line bullets.** If a bullet doesn't earn at least 1 full sentence of development, fold it into prose.
+- **No bullets for things that are clearly narrative** ("how it impacted the industry", "why this matters", "the history of X").
+
+If you find yourself reaching for a `<ul>`, try first: "Could I write this as a 3-sentence paragraph that names the items mid-sentence and gives one example?" Usually yes — and it will sound human.
+
+---
+
 ## Step 0 — Determine the Funnel Stage BEFORE Structuring
 
 Blog is not always TOFU. The stage is defined by the intent behind the keyword.
@@ -154,12 +182,14 @@ H3: [Criterion 3 — e.g.: Integrations]
 H3: [Criterion 4 — e.g.: Support and Onboarding]
 
 H2: When to Choose [X]?
-    - [User profile or ideal use case]
-    - [User profile or ideal use case]
+    Write this as 1-2 short paragraphs. Describe the kind of team, company size,
+    or situation where X is clearly the better call, and back it up with one
+    concrete reason or example. Avoid bullet lists here — narrative reads more
+    expert and more decisive.
 
 H2: When to Choose [Y]?
-    - [User profile or ideal use case]
-    - [Alternative if neither fits]
+    Same approach: 1-2 paragraphs naming the user profile, the deciding criterion,
+    and (if useful) the alternative if neither fits. No bullets.
 
 H2: Final Verdict
     1-3 paragraphs with honest conclusion
@@ -249,12 +279,12 @@ H2: Pros and Cons of [X]
     **Verdict**: [1-2 sentences with balanced conclusion and direct recommendation]
 
 H2: Who SHOULD Use [X]?
-    - [Profile 1 with concrete reason]
-    - [Profile 2 with concrete reason]
+    Two short paragraphs (or one well-developed one) describing the profiles
+    that get the most value, each with the concrete reason. Prose, not bullets.
 
 H2: Who Should NOT Use [X]?
-    - [Profile 1 with concrete reason]
-    - [Suggested alternative]
+    Same: 1-2 paragraphs naming the profile, the reason, and the suggested
+    alternative. The honesty is what builds credibility — give it room to breathe.
 
 H2: Pricing and Plans — How Much Does It Really Cost?
     Not just list prices — include real cost of implementation, add-ons, etc.
@@ -344,3 +374,7 @@ H2: Conclusion — How to Get Started with [Topic] Today
 - ❌ CTA unrelated to the article topic
 - ❌ Claims without data, source, or concrete example
 - ❌ Listicle with single-line items without development
+- ❌ **Over-listing.** Closing every H2 with a `<ul>` of 4-6 items. Reads as AI-generated, not as expert writing.
+- ❌ **Bullets where prose belongs.** "Benefits of X", "reasons to consider Y", "how it impacts Z" written as bullets instead of paragraphs.
+- ❌ **Two lists in a row.** Two consecutive bulleted blocks, sometimes separated only by a heading or one filler sentence.
+- ❌ **Decorative bullets.** Lists where every item is a single line with no example, data, or development — they add nothing the body wasn't already going to say.

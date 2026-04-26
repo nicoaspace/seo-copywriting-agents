@@ -57,7 +57,9 @@ USAGE EXAMPLES
 import argparse
 import asyncio
 import json
+import sys
 import time
+import unicodedata as _unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -100,6 +102,43 @@ def _ts() -> str:
     return f"{m}m {s:02d}s"
 
 
+def _safe_state_for_checkpoint(state: dict) -> dict:
+    """Return a JSON-serialisable shallow copy of *state* for checkpointing (C5).
+
+    Skips internal helpers (token tracker, audit events, raw event objects)
+    and coerces values to JSON-friendly types via ``default=str`` at dump time.
+    """
+    if not state:
+        return {}
+    skip = {"_tracker", "_audit_events"}
+    return {k: v for k, v in state.items() if k not in skip}
+
+
+def _write_checkpoint(brand_dir: Path, label: str, state: dict) -> None:
+    """Persist a snapshot of session state to disk (C5).
+
+    Snapshots land in ``brands/{brand}/.checkpoints/`` so a crash mid-pipeline
+    (OOM, timeout, ctrl-c, network drop) doesn't lose the Brand DNA / research
+    brief / partial drafts. Failures are swallowed with a warning so the
+    pipeline never aborts because checkpointing itself failed.
+    """
+    try:
+        import re as _re  # local import (alias used later in the file is defined further down)
+        ckpt_dir = brand_dir / ".checkpoints"
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        # Slugify label for filename safety.
+        safe_label = _re.sub(r"[^A-Za-z0-9_-]+", "_", label).strip("_") or "state"
+        ckpt_path = ckpt_dir / f"{ts}__{safe_label}.json"
+        payload = _safe_state_for_checkpoint(state)
+        ckpt_path.write_text(
+            json.dumps(payload, default=str, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as exc:  # pragma: no cover — checkpointing must never crash the pipeline
+        print(f"  ⚠ checkpoint failed ({label}): {type(exc).__name__}: {exc}")
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Input sanitization (S1) & output watermarking (S2)
 # ──────────────────────────────────────────────────────────────────────────────
@@ -123,6 +162,17 @@ def _sanitize_text(value: str, *, max_len: int = 500, allow_newlines: bool = Fal
         return ""
     text = str(value)
     text = _CONTROL_CHARS_RE.sub("", text)
+    # Drop Unicode format controls (e.g., zero-width chars like U+200B)
+    # and any remaining control chars except tab/newline.
+    cleaned: list[str] = []
+    for ch in text:
+        cat = _unicodedata.category(ch)
+        if cat == "Cf":
+            continue
+        if cat == "Cc" and ch not in ("\t", "\n", "\r"):
+            continue
+        cleaned.append(ch)
+    text = "".join(cleaned)
     if not allow_newlines:
         text = text.replace("\r", " ").replace("\n", " ")
     text = _re_module.sub(r"\s+", " ", text).strip()
@@ -222,6 +272,14 @@ def parse_args() -> argparse.Namespace:
                         dest="use_sitemap",
                         help=("'true' = use existing brands/{brand}/url_inventory.json (error if missing). "
                               "'false' = re-fetch the brand sitemap and regenerate the inventory."))
+    parser.add_argument("--funnel-stage", default="auto",
+                        choices=["auto", "TOFU", "MOFU", "BOFU"],
+                        dest="funnel_stage",
+                        help=("Marketing funnel stage for the content. "
+                              "'auto' (default) = the Researcher recommends TOFU/MOFU/BOFU "
+                              "based on user intent and SERP analysis. "
+                              "'TOFU' / 'MOFU' / 'BOFU' = user-specified stage; the Researcher "
+                              "records it as-is and the Copywriter writes directly for that stage."))
 
     args = parser.parse_args()
 
@@ -376,6 +434,9 @@ async def run_pipeline(args: argparse.Namespace, tracker: TokenTracker) -> dict:
     #            "Link Opportunities" (top items returned by analyze_internal_links).
     internal_links_mode = "user" if args.internal_links else "auto"
 
+    # Funnel stage mode: 'auto' = Researcher recommends; 'manual' = user-specified.
+    funnel_stage_mode = "auto" if args.funnel_stage == "auto" else "manual"
+
     # Prepare initial state
     initial_state = {
         "brand_name": args.brand,
@@ -388,6 +449,8 @@ async def run_pipeline(args: argparse.Namespace, tracker: TokenTracker) -> dict:
         "format": args.output_format,
         "internal_links": args.internal_links,
         "internal_links_mode": internal_links_mode,
+        "funnel_stage": args.funnel_stage,
+        "funnel_stage_mode": funnel_stage_mode,
         "url_inventory_size": len(url_inventory),
         "qa_feedback": "",
         "research_brief": "",
@@ -427,6 +490,23 @@ async def run_pipeline(args: argparse.Namespace, tracker: TokenTracker) -> dict:
         f"Format: {args.output_format}\n"
     )
 
+    # Funnel-stage block
+    if funnel_stage_mode == "manual":
+        user_message += (
+            f"Funnel Stage Mode: manual\n"
+            f"Funnel Stage (user-specified, use exactly this value): {args.funnel_stage}\n"
+            "The Researcher must NOT recommend a different stage — record this stage "
+            "verbatim in the brief. The Copywriter must write directly for this stage.\n"
+        )
+    else:
+        user_message += (
+            "Funnel Stage Mode: auto\n"
+            "No funnel stage specified by the user. The Researcher must recommend "
+            "one of TOFU, MOFU, or BOFU based on user intent, SERP analysis, and "
+            "page type, and write the recommendation in the research brief. The "
+            "Copywriter must adopt the stage chosen by the Researcher.\n"
+        )
+
     if args.internal_links:
         user_message += (
             f"Internal Links Mode: user\n"
@@ -456,6 +536,61 @@ async def run_pipeline(args: argparse.Namespace, tracker: TokenTracker) -> dict:
 
     _current_author: str | None = None
     pipeline_error: Exception | None = None
+
+    # M10: structured per-phase tracking for diagnostics. Each agent author
+    # gets a record with status, start/end timestamps, accumulated tokens,
+    # and (on failure) the error type + message. Persisted into final state
+    # under "_pipeline_phases" so post-mortems show exactly which phase
+    # succeeded/failed instead of a single generic "Pipeline error: ...".
+    _phases: dict[str, dict] = {}
+
+    def _phase_start(name: str) -> None:
+        rec = _phases.get(name) or {
+            "status": "running",
+            "started_ts": _ts(),
+            "ended_ts": None,
+            "events": 0,
+            "tool_calls": 0,
+            "tokens_in": 0,
+            "tokens_out": 0,
+            "error": None,
+        }
+        rec["status"] = "running"
+        if not rec.get("started_ts"):
+            rec["started_ts"] = _ts()
+        _phases[name] = rec
+
+    def _phase_record_event(name: str, event_obj) -> None:
+        rec = _phases.setdefault(name, {
+            "status": "running",
+            "started_ts": _ts(),
+            "ended_ts": None,
+            "events": 0,
+            "tool_calls": 0,
+            "tokens_in": 0,
+            "tokens_out": 0,
+            "error": None,
+        })
+        rec["events"] += 1
+        usage = getattr(event_obj, "usage_metadata", None)
+        if usage is not None:
+            rec["tokens_in"] += getattr(usage, "prompt_token_count", 0) or 0
+            rec["tokens_out"] += getattr(usage, "response_token_count", 0) or 0
+        content_obj = getattr(event_obj, "content", None)
+        if content_obj and content_obj.parts:
+            for p in content_obj.parts:
+                if getattr(p, "function_call", None):
+                    rec["tool_calls"] += 1
+
+    def _phase_complete(name: str | None) -> None:
+        if not name:
+            return
+        rec = _phases.get(name)
+        if not rec:
+            return
+        if rec.get("status") == "running":
+            rec["status"] = "completed"
+            rec["ended_ts"] = _ts()
 
     # Track each iteration's outputs for debug saving
     _iterations: list[dict] = []  # [{draft: str, qa: str}, ...]
@@ -521,6 +656,8 @@ async def run_pipeline(args: argparse.Namespace, tracker: TokenTracker) -> dict:
             # Record token usage and an audit-trail entry for this event.
             tracker.record(author, getattr(event, "usage_metadata", None))
             _record_audit(event, author)
+            # M10: per-phase event accounting.
+            _phase_record_event(author, event)
 
             # Print a header line when we switch to a new agent
             if author != _current_author:
@@ -528,8 +665,29 @@ async def run_pipeline(args: argparse.Namespace, tracker: TokenTracker) -> dict:
                 if _current_author == "QAAgent" and _current_iter:
                     _iterations.append(_current_iter)
                     _current_iter = {}
+                # M10: mark the previous phase as completed before moving on.
+                _phase_complete(_current_author)
+                # C5: snapshot session state to disk before the next agent
+                # starts. If the pipeline crashes mid-run we keep all upstream
+                # work (Brand DNA, research brief, prior drafts).
+                if _current_author is not None:
+                    try:
+                        prior = await session_service.get_session(
+                            app_name="seo-copywriting",
+                            user_id="user",
+                            session_id=session.id,
+                        )
+                        if prior is not None:
+                            _write_checkpoint(
+                                brand_dir,
+                                f"after_{_current_author}",
+                                dict(prior.state),
+                            )
+                    except Exception as exc:  # pragma: no cover
+                        print(f"  ⚠ checkpoint fetch failed: {type(exc).__name__}: {exc}")
                 _current_author = author
                 print(f"  [{_ts()}] ┌─ [{author}] started")
+                _phase_start(author)
 
             content = getattr(event, "content", None)
             if not content or not content.parts:
@@ -569,10 +727,43 @@ async def run_pipeline(args: argparse.Namespace, tracker: TokenTracker) -> dict:
         pipeline_error = exc
         print(f"\n  [{_ts()}] ✗ Pipeline error: {exc}")
         print(f"  [{_ts()}] ▸ Attempting to save partial outputs...\n")
+        # M10: mark the running phase as failed with structured error info.
+        if _current_author:
+            rec = _phases.setdefault(_current_author, {
+                "status": "running", "started_ts": _ts(), "ended_ts": None,
+                "events": 0, "tool_calls": 0, "tokens_in": 0, "tokens_out": 0,
+                "error": None,
+            })
+            rec["status"] = "failed"
+            rec["ended_ts"] = _ts()
+            rec["error"] = {
+                "type": type(exc).__name__,
+                "message": str(exc)[:500],
+            }
+        # C5: emergency checkpoint with whatever survived in the session.
+        try:
+            crash_session = await session_service.get_session(
+                app_name="seo-copywriting",
+                user_id="user",
+                session_id=session.id,
+            )
+            if crash_session is not None:
+                _write_checkpoint(
+                    brand_dir,
+                    f"crash_{_current_author or 'pipeline'}",
+                    dict(crash_session.state),
+                )
+        except Exception as ckpt_exc:  # pragma: no cover
+            print(f"  ⚠ crash checkpoint failed: {type(ckpt_exc).__name__}: {ckpt_exc}")
 
     # Finalize last iteration if pending
     if _current_iter:
         _iterations.append(_current_iter)
+
+    # M10: close out the final phase if it didn't already fail.
+    if _current_author and _current_author in _phases:
+        if _phases[_current_author].get("status") == "running":
+            _phase_complete(_current_author)
 
     # Retrieve state (even on partial failure — agents may have written to session)
     updated_session = await session_service.get_session(
@@ -583,10 +774,26 @@ async def run_pipeline(args: argparse.Namespace, tracker: TokenTracker) -> dict:
 
     state = dict(updated_session.state) if updated_session else {}
 
+    # C5: final checkpoint after the last agent finishes (covers the case
+    # where the pipeline succeeds — earlier checkpoints only fire on author
+    # transitions, missing the final agent's output).
+    if _current_author is not None and updated_session is not None:
+        _write_checkpoint(brand_dir, f"final_{_current_author}", state)
+
     # Attach iterations and tracker for debug saving
     state["_iterations"] = _iterations
     state["_tracker"] = tracker
     state["_audit_events"] = _audit_events
+    # M10: surface the structured per-phase log in the final state and as a
+    # one-line console summary so failures are immediately attributable.
+    state["_pipeline_phases"] = _phases
+    if _phases:
+        summary_bits = []
+        for name, rec in _phases.items():
+            tag = rec.get("status", "?")
+            tok = rec.get("tokens_in", 0) + rec.get("tokens_out", 0)
+            summary_bits.append(f"{name}={tag}({tok}t)")
+        print(f"  ▸ phases: {' | '.join(summary_bits)}")
 
     # Web-search soft-budget summary (M1)
     _bws = get_batch_search_stats()
@@ -615,6 +822,40 @@ async def run_pipeline(args: argparse.Namespace, tracker: TokenTracker) -> dict:
 # Output saving
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _validate_output_format(content: str, output_format: str) -> list[str]:
+    """Quick structural sanity check before saving final content (M9).
+
+    Returns a list of human-readable error strings (empty list = OK). Does
+    NOT block saving — the pipeline still writes the file so the operator
+    can inspect it — but issues are surfaced in the console + appended as a
+    trailing comment so they can't be missed.
+    """
+    errors: list[str] = []
+    text = (content or "").strip()
+    if not text:
+        return ["empty content"]
+
+    fmt = (output_format or "").lower()
+    if fmt == "html":
+        if not _re_module.match(r"<!doctype\s+html", text, _re_module.IGNORECASE):
+            errors.append("HTML output missing <!DOCTYPE html> at top.")
+        lower = text.lower()
+        if "<html" not in lower:
+            errors.append("HTML output missing <html> tag.")
+        if "<body" not in lower:
+            errors.append("HTML output missing <body> tag.")
+        if "<h1" not in lower:
+            errors.append("HTML output missing <h1>.")
+    else:  # markdown / text
+        if not text.startswith("---"):
+            errors.append("Markdown output does not start with YAML frontmatter (---).")
+        else:
+            m = _re_module.match(r"---\s*\n.*?\n---\s*\n", text, _re_module.DOTALL)
+            if not m:
+                errors.append("Markdown frontmatter is not properly closed with a second `---`.")
+    return errors
+
+
 def save_outputs(args: argparse.Namespace, state: dict) -> tuple[Path, Path | None, Path | None]:
     """Save final content, QA report, brand DNA, and (if TEST_MODE) intermediate agent outputs."""
     brand_dir = brand_path(args.brand)
@@ -637,7 +878,21 @@ def save_outputs(args: argparse.Namespace, state: dict) -> tuple[Path, Path | No
     # Save content (skip if empty)
     content_file = output_dir / f"{base_name}.{ext}"
     if final_content:
+        # M9: validate format before writing. Non-blocking: we still save the
+        # file so the operator can inspect it, but errors are printed to the
+        # console AND appended as a trailing comment in the saved file.
+        format_errors = _validate_output_format(final_content, args.output_format)
         watermarked = _watermark_for_format(args, final_content)
+        if format_errors:
+            print(f"  ⚠ Output format validation found {len(format_errors)} issue(s):")
+            for err in format_errors:
+                print(f"      - {err}")
+            note = (
+                "<!-- FORMAT VALIDATION WARNINGS:\n"
+                + "\n".join(f"  - {e}" for e in format_errors)
+                + "\n-->\n"
+            )
+            watermarked = watermarked.rstrip() + "\n\n" + note
         content_file.write_text(watermarked, encoding="utf-8")
         print(f"  ✓ Content saved:  {content_file.relative_to(PROJECT_ROOT)}")
     else:
@@ -720,6 +975,13 @@ def save_outputs(args: argparse.Namespace, state: dict) -> tuple[Path, Path | No
 def main():
     global _start_time
     _start_time = time.time()
+
+    # Prevent hard failures when Windows console encoding (cp1252) can't
+    # represent some characters; replace unsupported code points in logs.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(errors="replace")
 
     args = parse_args()
 

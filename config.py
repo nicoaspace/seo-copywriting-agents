@@ -35,6 +35,11 @@ CLAUDE_MODEL = "anthropic/claude-sonnet-4-20250514"
 QUALITY_THRESHOLD  = 85   # Score out of 100 to pass QA (≥85 → APPROVE, <85 → REVISE)
 MAX_QA_ITERATIONS  = 3    # Max write→QA cycles before forced save
 
+# If the draft word count exceeds the SERP average by more than this percentage,
+# the word-count check escalates to CRITICAL (0 pts) instead of WARNING (1 pt).
+# Example: 10.0 means >10% over the SERP average → CRITICAL.
+WORD_COUNT_CRITICAL_OVERAGE_PCT = 10.0
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Sitemap error budget
 # ──────────────────────────────────────────────────────────────────────────────
@@ -209,6 +214,21 @@ PAGE_TYPE_REFERENCES: dict[str, str] = {
 }
 ALWAYS_LOADED_REFERENCES: tuple[str, ...] = ("formulas-copywriting.md",)
 
+# Fail fast at import time if PAGE_TYPES drifts away from word-limits or
+# reference-file mappings (M11). Missing entries silently fall back to
+# defaults, which causes wrong token budgets and oversized prompts.
+_missing_limits = set(PAGE_TYPES) - set(PAGE_TYPE_WORD_LIMITS)
+_missing_refs   = set(PAGE_TYPES) - set(PAGE_TYPE_REFERENCES)
+assert not _missing_limits, (
+    f"config.py: PAGE_TYPES missing from PAGE_TYPE_WORD_LIMITS: "
+    f"{sorted(_missing_limits)}. Add an (ideal_min, ideal_max, hard_max) tuple."
+)
+assert not _missing_refs, (
+    f"config.py: PAGE_TYPES missing from PAGE_TYPE_REFERENCES: "
+    f"{sorted(_missing_refs)}. Add a reference filename mapping."
+)
+del _missing_limits, _missing_refs
+
 # ──────────────────────────────────────────────────────────────────────────────
 # API key helpers
 # ──────────────────────────────────────────────────────────────────────────────
@@ -288,8 +308,42 @@ def _patch_litellm_retry_after() -> None:
         pass  # litellm not installed, nothing to patch
 
 
-def setup_env_keys() -> None:
-    """Inject API keys into os.environ so ADK / LiteLLM can find them."""
+class MissingAPIKeysError(RuntimeError):
+    """Raised when required API keys are not available in env or env/.env.local."""
+
+    def __init__(self, missing: list[str]) -> None:
+        self.missing = list(missing)
+        super().__init__(
+            "Missing required API keys: "
+            + ", ".join(self.missing)
+            + f". Set them as environment variables or in {ENV_FILE}."
+        )
+
+
+def check_api_keys(*, required: tuple[str, ...] = ("GOOGLE_API_KEY", "ANTHROPIC_API_KEY")) -> list[str]:
+    """Return the list of *required* API keys that are missing/empty.
+
+    Looks at both ``os.environ`` and the ``env/.env.local`` file. Does not
+    raise — callers (CLI, Streamlit) decide how to react.
+    """
+    missing: list[str] = []
+    for name in required:
+        val = os.environ.get(name, "").strip()
+        if not val:
+            val = _load_key_from_env_file(name)
+        if not val:
+            missing.append(name)
+    return missing
+
+
+def setup_env_keys(*, validate: bool = True) -> None:
+    """Inject API keys into ``os.environ`` so ADK / LiteLLM can find them.
+
+    When ``validate`` is True (default), raises :class:`MissingAPIKeysError` if
+    any required key is still empty after attempting to load it from
+    ``env/.env.local``. This fails fast at startup instead of producing a
+    cryptic 401 deep inside the pipeline.
+    """
     if not os.environ.get("GOOGLE_API_KEY"):
         k = _load_key_from_env_file("GOOGLE_API_KEY")
         if k:
@@ -300,6 +354,14 @@ def setup_env_keys() -> None:
             os.environ["ANTHROPIC_API_KEY"] = k
 
     _patch_litellm_retry_after()
+
+    if validate:
+        missing: list[str] = []
+        for name in ("GOOGLE_API_KEY", "ANTHROPIC_API_KEY"):
+            if not os.environ.get(name, "").strip():
+                missing.append(name)
+        if missing:
+            raise MissingAPIKeysError(missing)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Brand / output helpers

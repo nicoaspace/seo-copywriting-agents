@@ -20,7 +20,10 @@ def fact_check_claim(claim: str) -> dict:
 
     Returns:
         dict with keys: "claim", "verdict" (verified|unverified|false),
-        "evidence" (text summary), "sources" (list of URLs).
+        "evidence" (text summary), "sources" (list of {"uri","title"} dicts
+        extracted from Gemini's grounding_metadata — same pattern as the
+        researcher/copywriter web_search tool, so the QA agent can verify
+        that fact-checks come from real pages).
     """
     client = genai.Client()
 
@@ -57,20 +60,42 @@ def fact_check_claim(claim: str) -> dict:
     if "EVIDENCE:" in text:
         evidence = text.split("EVIDENCE:")[1].split("SOURCES:")[0].strip()
 
-    # Extract grounding sources from response metadata
-    sources = []
+    # Extract grounding sources from response metadata.
+    # Mirror the structure used by tools/web_search.py so the QA agent gets
+    # the same level of grounding traceability as the researcher/copywriter.
+    sources: list[dict] = []
+    grounding_supports: list[dict] = []
     if hasattr(response, "candidates") and response.candidates:
         candidate = response.candidates[0]
         gm = getattr(candidate, "grounding_metadata", None)
-        if gm and hasattr(gm, "grounding_chunks"):
-            for chunk in gm.grounding_chunks:
+        if gm is not None:
+            seen_uris: set[str] = set()
+            for chunk in getattr(gm, "grounding_chunks", []) or []:
                 web = getattr(chunk, "web", None)
-                if web and hasattr(web, "uri"):
-                    sources.append(web.uri)
+                if not web:
+                    continue
+                uri = getattr(web, "uri", "") or ""
+                title = getattr(web, "title", "") or ""
+                if uri and uri not in seen_uris:
+                    seen_uris.add(uri)
+                    sources.append({"uri": uri, "title": title})
+
+            # grounding_supports maps text segments in the model output to
+            # the chunk indices that grounded them — useful to verify which
+            # part of the EVIDENCE came from which source.
+            for support in getattr(gm, "grounding_supports", []) or []:
+                segment = getattr(support, "segment", None)
+                seg_text = getattr(segment, "text", "") if segment else ""
+                indices = list(getattr(support, "grounding_chunk_indices", []) or [])
+                if seg_text and indices:
+                    grounding_supports.append(
+                        {"text": seg_text, "chunk_indices": indices}
+                    )
 
     return {
         "claim": claim,
         "verdict": verdict,
         "evidence": evidence,
-        "sources": sources[:5],
+        "sources": sources,
+        "grounding_supports": grounding_supports,
     }

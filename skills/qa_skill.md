@@ -36,6 +36,14 @@ A deterministic structural pre-check has already been run on this draft. Its res
 {structural_validation}
 ```
 
+A deterministic **word-count pre-check** has also been run. Its result is:
+
+```
+{word_count_validation}
+```
+
+This number comes from `count_draft_words` (HTML markup, scripts and YAML frontmatter are stripped before counting). Treat it as the AUTHORITATIVE word count — do NOT estimate by eye and do NOT contradict it. The `status` field decides Category 3 → Word Count Compliance scoring (see below).
+
 If the line above starts with `STRUCTURAL: FAIL`, treat it as the highest-priority blocker. Use the listed structural issues as the FIRST items in your CRITICAL ISSUES section, and cap the overall score at 50/100 even if everything else looks fine.
 
 Then, before scoring, also verify the draft is actual publishable content:
@@ -54,16 +62,15 @@ Evaluate the draft content across ALL 7 categories below. For each category, ass
 
 ---
 
-### CATEGORY 1: Brand Coherence (20 points)
+### CATEGORY 1: Brand Coherence (15 points)
 
 Review the Brand DNA's Voice Adjectives [5] and evaluate whether the content reflects each one.
 
 **Scoring:**
-- 4 points per adjective: Does the content's tone and language embody this adjective?
-  - 4 = Strongly embodied
-  - 3 = Present but could be stronger
-  - 2 = Partially present
-  - 1 = Barely present
+- 3 points per adjective: Does the content's tone and language embody this adjective?
+  - 3 = Strongly embodied
+  - 2 = Present but could be stronger
+  - 1 = Partially present
   - 0 = Contradicts the adjective
 
 **Also check:**
@@ -77,9 +84,9 @@ Review the Brand DNA's Voice Adjectives [5] and evaluate whether the content ref
 
 ---
 
-### CATEGORY 2: Ethical Claims Audit (15 points)
+### CATEGORY 2: Ethical Claims Audit (12 points)
 
-**Start at 15 points. Deduct for each violation:**
+**Start at 12 points. Deduct for each violation:**
 
 - **CRITICAL (-5 each):** Unverifiable superlatives ("somos los mejores", "el líder del mercado", "la mejor solución")
 - **CRITICAL (-5 each):** Unverifiable statistics or percentages NOT found in Brand DNA's "Verified Claims"
@@ -91,20 +98,22 @@ Review the Brand DNA's Voice Adjectives [5] and evaluate whether the content ref
 **Cross-reference against Brand DNA's "Forbidden Claims & Compliance" section.**
 **Cross-reference against Brand DNA's "Verified Claims" — these ARE safe to use.**
 
-**CRITICAL RULE: Any single CRITICAL issue in this category CAPS the total score at 70 maximum.** This forces a revision cycle.
+**Verdict guard (no hard score cap):** Apply the deductions above continuously — do NOT cap the total score artificially. However, if **2 or more CRITICAL ethics issues** remain unresolved in this category after deductions, you MUST set the global `Verdict: REVISION NEEDED` regardless of total score, because unverifiable hard claims are a publication blocker. A single CRITICAL issue is reflected in the –5 deduction alone and does not by itself force revision if the rest of the content is strong (total ≥ 85).
+
+**Note:** The maximum score for this category is 12. Deductions can bring it to 0 but cannot make the category negative.
 
 **Issue format:** `[ETHICS-CRITICAL|WARNING|NOTE] Exact quote from content → Why it's a problem → Suggested fix`
 
 ---
 
-### CATEGORY 3: SEO Technical Quality (20 points)
+### CATEGORY 3: SEO Technical Quality (30 points)
 
-**Keyword Placement (4 points):**
-- Primary keyword in H1? (1 pt)
-- Primary keyword in first 100 words? (1 pt)
-- Primary keyword in meta title? (1 pt)
-- Primary keyword in meta description? (0.5 pts)
-- Secondary keywords in H2s? (0.5 pts)
+**Keyword Placement (6 points):**
+- Primary keyword in H1? (1.5 pt)
+- Primary keyword in first 100 words? (1.5 pt)
+- Primary keyword in meta title? (1.5 pt)
+- Primary keyword in meta description? (0.75 pts)
+- Secondary keywords in H2s? (0.75 pts)
 
 **Secondary Keyword Coverage:**
 - Parse `{secondary_keywords}` (comma-separated). For each secondary keyword:
@@ -127,58 +136,60 @@ Review the Brand DNA's Voice Adjectives [5] and evaluate whether the content ref
 - No hierarchy skips (e.g., H1 → H3 without H2)? (1 pt)
 - Total H3s ≤ 2× number of H2s? (1 pt) — Flag as WARNING if exceeded.
 
-**Word Count Compliance (2 points):**
-- Count total words in the draft content (body text only, excluding HTML tags and meta elements).
-- Determine the applicable word count limits using the table below AND the research brief:
+**Word Count Compliance (8 points):**
 
-| Page Type | Default Ideal Range | Default Hard Max |
-|-----------|---------------------|------------------|
-| landing-page | 500–1,000 | 1,200 |
-| sales-page | 2,000–4,000 | 5,000 |
-| service-page | 1,000–2,000 | 2,200 |
-| product-page | 800–1,500 | 1,700 |
-| blog-post | 1,500–2,500 | 2,700 |
-| about-page | 800–1,500 | 1,700 |
-| faq | 1,000–2,000 | 2,500 |
-| pillar-page | 3,000–5,000 | 5,500 |
-| category-page | 500–1,000 | 1,200 |
-| case-study | 800–1,500 | 1,700 |
-| pricing-page | 500–1,000 | 1,200 |
-| home-page | 500–1,000 | 1,200 |
+The deterministic `count_draft_words` pre-check has already produced the
+authoritative word count and a `status`. Use it directly — do NOT recount
+by eye. If you need to re-verify mid-review (e.g., after the copywriter
+revises in a later iteration), call the `count_draft_words` tool with the
+draft, format, and the research brief's "Average Word Count" /
+"Recommended Minimum Word Count" values.
 
-- If the research brief provides "Average Word Count" and "Recommended Minimum Word Count", calculate:
-  - Target range = max(default ideal_min, Average) to max(default ideal_max, Recommended Minimum × 1.15)
-  - Hard cap = max(default hard_max, Recommended Minimum × 1.2)
-- Otherwise, use the default values from the table.
+The pre-check status maps to scoring as follows:
 
-**Scoring:**
-- Within target range = 2 pts
-- Above target range but within hard cap = 1 pt + WARNING
-- Exceeds hard cap = 0 pts + CRITICAL (content is bloated and needs cutting)
-- More than 10% below the ideal minimum = 0 pts + WARNING (content may be too thin)
+| `status` from pre-check | Score | Issue to log |
+|-------------------------|-------|--------------|
+| `within_target` | 8 pts | — |
+| `below_avg` | 5 pts | `[SEO-WARNING] Word count <N> is below the SERP average (<avg>). Content may lack competitive depth.` |
+| `above_target` | 5 pts | `[SEO-WARNING] Word count <N> exceeds SERP average <avg> but is within the critical threshold. Trim filler/redundancy.` |
+| `above_critical` | 0 pts | `[SEO-CRITICAL] Word count <N> is +<delta_vs_avg_pct>% over the SERP average (<avg>), exceeding the configured critical threshold. Content is bloated — must be cut by at least <cut_target> words.` |
+| `above_hard_cap` | 0 pts | `[SEO-CRITICAL] Word count <N> exceeds hard cap <hard_cap> (SERP avg <avg>, recommended min <rec_min>). Content is bloated by ~<delta_vs_avg_pct>% over average — must be cut.` |
+| `below_min` | 0 pts | `[SEO-WARNING] Word count <N> is more than 10% below the recommended minimum <rec_min>. Content is too thin to compete.` |
+| `no_targets` | Use the page-type defaults from the table above and score accordingly. | — |
 
-**Internal Links (0.5 points):**
+When you log the issue, ALWAYS quote the exact numbers from the pre-check
+(`word_count`, `avg_word_count`, `recommended_min`, `delta_vs_avg`,
+`delta_vs_avg_pct`, `hard_cap`) so the copywriter knows the precise gap to
+close. For drafts in `above_target` or `above_hard_cap` status, the
+revision feedback MUST include a concrete word-cut target (e.g.,
+"trim ~{word_count − ideal_max} words by removing redundant paragraphs in
+sections X, Y").
 
-**FORMAT RULE (applies to all modes):** Every internal link in the body MUST be rendered as a real anchor — `<a href="URL">anchor</a>` (HTML) or `[anchor](URL)` (Markdown). HTML comments such as `<!-- Internal Link Suggestion ... -->` are NOT links and count as missing. Flag any such comment as `[SEO-CRITICAL] Link rendered as HTML comment instead of live anchor`.
+**Internal Links (1 point):**
+
+**FORMAT RULE (applies to all modes):** Every internal link in the body MUST be rendered as a real anchor — `<a href="URL" target="_blank">anchor</a>` (HTML) or `[anchor](URL)` (Markdown). `target="_blank"` is mandatory on ALL links. HTML comments such as `<!-- Internal Link Suggestion ... -->` are NOT links and count as missing. Flag any such comment as `[SEO-CRITICAL] Link rendered as HTML comment instead of live anchor`.
+
+**ATTRIBUTE RULES (internal links):**
+- Missing `target="_blank"` on an internal link → `[SEO-WARNING] Internal link missing target="_blank": <url>`
 
 **URL VERIFICATION:** The research brief's Section 8 contains the JSON of real URLs from the brand's sitemap (under "Suggested Internal Links"). For every internal `<a href>` in the draft, the target URL MUST appear either in `{internal_links}` (Mode A) or in Section 8's `internal_links` array (Mode B). Any URL not found in either source → `[SEO-WARNING] Internal URL not in brand inventory: <url>`.
 
 If `{internal_links}` is **NOT empty** (user-specified links):
-- All provided URLs present exactly once each AND distributed across the article = 0.5 pt
-- Any provided URL missing from the content = 0.25 pts + WARNING
-- Any URL repeated = 0.25 pts + WARNING
+- All provided URLs present exactly once each AND distributed across the article = 1 pt
+- Any provided URL missing from the content = 0.5 pts + WARNING
+- Any URL repeated = 0.5 pts + WARNING
 - Any extra links added beyond those specified = WARNING
-- All links clustered at the end instead of distributed = 0.25 pts + WARNING
+- All links clustered at the end instead of distributed = 0.5 pts + WARNING
 
 If `{internal_links}` is **empty** (links sourced from research brief Section 8):
-- 2–3 distinct URLs taken from Section 8's `internal_links`, distributed across the article = 0.5 pt
-- 0–1 links = 0.25 pts + NOTE (could add more)
+- 2–3 distinct URLs taken from Section 8's `internal_links`, distributed across the article = 1 pt
+- 0–1 links = 0.5 pts + NOTE (could add more)
 - 4+ links = 0 pts + WARNING (too many — reduce to 2–3)
 - Any URL not present in Section 8's `internal_links` array = 0 pts + CRITICAL (invented URL)
 - Any repeated URL = WARNING
 - All links clustered at the end = WARNING
 
-**Authority / External Links (0.5 points):**
+**Authority / External Links (1 point):**
 
 Authority links are external citations to high-authority sources (Wikipedia, .gov, .edu, official institutions like WHO, World Bank, OECD). They live in Section 8's `authority_links` JSON array of the research brief.
 
@@ -193,20 +204,20 @@ Authority links are external citations to high-authority sources (Wikipedia, .go
 **DOMAIN QUALITY:** Target domain must be a recognized high-authority source. If the domain is a commercial site, blog, social network, or unknown/random publisher → `[SEO-WARNING] External link is not from a recognized authority source: <url>`.
 
 **COUNT (when Section 8 provides authority_links):**
-- 1–3 authority links present and distributed across the body = 0.5 pt
+- 1–3 authority links present and distributed across the body = 1 pt
 - 0 authority links present (despite Section 8 having candidates) = 0 pts + WARNING (`[SEO-WARNING] No authority links placed despite research brief providing verified candidates`)
-- 4+ authority links = 0.25 pts + WARNING (cap is 3)
+- 4+ authority links = 0.5 pts + WARNING (cap is 3)
 - All authority links clustered at the end = WARNING
 
 **COUNT (when Section 8 has no authority_links or returned a warning that all candidates failed verification):**
-- 0 authority links present = 0.5 pt (no penalty — none were available)
+- 0 authority links present = 1 pt (no penalty — none were available)
 - Article includes external links not present in Section 8 = WARNING
 
-**Meta Elements (5 points):**
+**Meta Elements (6 points):**
 - Meta title present and ≤60 chars? (1.5 pts)
 - Meta description present and ≤155 chars? (1.5 pts)
-- Meta title is compelling (not just keyword)? (1 pt)
-- Meta description includes CTA? (1 pt)
+- Meta title is compelling (not just keyword)? (1.5 pts)
+- Meta description includes CTA? (1.5 pts)
 
 **Issue format:** `[SEO-CRITICAL|WARNING|NOTE] Description | Current value → Expected value`
 
@@ -268,9 +279,9 @@ Authority links are external citations to high-authority sources (Wikipedia, .go
 
 ---
 
-### CATEGORY 6: Language Quality (10 points)
+### CATEGORY 6: Language Quality (8 points)
 
-**Grammar & Spelling (3 points):**
+**Grammar & Spelling (2 points):**
 - Are there grammatical errors?
 - Are there spelling errors?
 - Is punctuation correct?
@@ -282,7 +293,7 @@ Authority links are external citations to high-authority sources (Wikipedia, .go
 - Check for unnatural repetition of transition phrases and overly formal/stilted language that doesn't match Brand DNA voice.
 - Deduct 1 point per detected AI artifact pattern (after applying exceptions). Cap deductions for this sub-section at 4.
 
-**Natural Language (3 points):**
+**Natural Language (2 points):**
 - Does the text read like it was written by a knowledgeable human?
 - Is the language natural for the target country ({country})?
 - Are there awkward phrases or unnatural constructions?
@@ -373,20 +384,35 @@ Use this reference to verify the draft follows the correct framework for its `{p
 Calculate the total score:
 
 ```
-Brand Coherence:        __/20
-Ethical Claims:         __/15
-SEO Technical:          __/20
+Brand Coherence:        __/15
+Ethical Claims:         __/12
+SEO Technical:          __/30  ← most-weighted category
+  └─ Keyword Placement:  __/6
+  └─ Keyword Density:    __/4
+  └─ H-Tag Structure:    __/4
+  └─ Word Count:         __/8  ← deterministic (count_draft_words)
+  └─ Internal Links:     __/1
+  └─ Authority Links:    __/1
+  └─ Meta Elements:      __/6
 Content Quality:        __/20
 Factual Accuracy:       __/10
-Language Quality:       __/10
+Language Quality:        __/8
 Information Gain:        __/5
 ──────────────────────────────
 TOTAL:                 __/100
 ```
 
-**CRITICAL CAP RULE:** If there is ANY issue tagged as CRITICAL (in any category), the maximum possible score is 70, regardless of the raw calculation.
+**CRITICAL ISSUES RULE (no global cap):** Do NOT artificially cap the total score. Each CRITICAL issue is already reflected via its category-level deduction. The total score is the honest sum of category scores.
+
+However, CRITICAL issues are publication blockers in two specific cases:
+1. **STRUCTURAL FAIL** (from the structural pre-check): cap total at 50/100.
+2. **2 or more unresolved CRITICAL ethics claims** in Category 2: force `Verdict: REVISION NEEDED` regardless of total score.
+
+In all other cases, let the deductions speak for themselves: a draft with one CRITICAL issue but otherwise excellent execution can legitimately score ≥ 85 and be approved.
 
 **SCORE BOUNDS RULE:** Never assign a score higher than the maximum for any category. Double-check each category score against its max before calculating the total.
+
+**MONOTONICITY RULE:** When re-scoring a revised draft, the score should reflect the actual delta in quality. If the previous iteration scored X and the revision fixed all flagged issues without introducing new problems, the new score MUST be ≥ X. Do not "find new CRITICAL issues" in claims you previously approved unless they are genuinely new — this prevents oscillation between iterations.
 
 **HUMANIZATION:** Humanization is enforced inside Category 6 (Language Quality → "No AI Artifacts") using the HUMANIZER REFERENCE appended at the end of this document. There is no separate humanization category — humanization is a style filter on top of every other category, not its own scoring axis.
 

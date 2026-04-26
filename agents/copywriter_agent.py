@@ -19,6 +19,9 @@ from config import (
     load_skill,
     model_output_cap,
 )
+from tools.fact_checker import fact_check_claim
+from tools.word_counter import count_draft_words
+from tools.link_resolver import get_allowed_internal_links
 
 
 def _max_tokens_for_page_type(page_type: str) -> int:
@@ -82,6 +85,15 @@ def create_copywriter_agent(
         instruction=instruction,
         include_contents="none",
         output_key="draft_content",
+        # C6: expose deterministic tools so the copywriter can self-check
+        # facts and word count while drafting, instead of relying solely on
+        # the QA loop to surface those issues (which costs an extra full
+        # iteration ~20k tokens for each missed claim or length miss).
+        # M2/M3: get_allowed_internal_links returns the authoritative list of
+        # URLs allowed for the current article (user-mode = explicit list,
+        # auto-mode = parsed from the research brief). The copywriter must
+        # call this and never invent URLs outside the returned set.
+        tools=[fact_check_claim, count_draft_words, get_allowed_internal_links],
         generate_content_config=types.GenerateContentConfig(
             temperature=0.7,
             max_output_tokens=_max_tokens_for_page_type(page_type),

@@ -11,6 +11,8 @@ A service page is not a capabilities list. It's a case for why this service, del
 
 **The test:** If you swapped out your brand name for a competitor's and the page still made sense, it's too generic. Rewrite it.
 
+**Prose first.** The structure below uses bullets to *describe sections to the writer* — it does not mean the published page should be a wall of bulleted lists. Hero copy, problem section, process steps, "who this is for", and the closing should be written as short paragraphs that sound like a person, not a slide deck. Reserve bullets for places where parallel scanning genuinely helps the reader: the FAB block when comparing features against alternatives, the FAQ Q&A, or a 3-5 step process where each step has a verb-led title plus a sentence of explanation. If a "list" only has 3 items and each is a single line, write it as a sentence instead.
+
 ---
 
 ## Recommended Structure
@@ -119,3 +121,5 @@ Service pages target mid-to-high intent keywords. They're critical for local SEO
 - ❌ CTA that says "Contact Us" without specifying what happens next
 - ❌ Copying the same template across all service pages with just the service name swapped
 - ❌ No proof — no case studies, no testimonials, no metrics
+- ❌ **Over-listing.** Turning the problem section, the "who this is for" section, or the process narrative into bullet lists. These work better as 1-3 short paragraphs that show empathy and reasoning.
+- ❌ **Decorative pillar bullets.** A grid of 3-5 "pillars" where each one is a single line with no concrete benefit or example.
