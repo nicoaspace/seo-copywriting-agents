@@ -15,9 +15,15 @@ from datetime import datetime, timezone
 # ──────────────────────────────────────────────────────────────────────────────
 
 PRICING: dict[str, dict[str, float]] = {
-    # Gemini 2.5 Flash  (as of 2025-06)
+    # Gemini 3 Flash Preview (as of 2026-04)
+    "gemini-3-flash-preview": {"input": 0.50, "output": 3.00},
+    # Keep historical pricing for old runs.
     "gemini-2.5-flash": {"input": 0.15, "output": 0.60},
-    # Claude Sonnet 4   (as of 2025-06)
+    # Active copywriter model.
+    "anthropic/claude-haiku-4-5": {"input": 1.00, "output": 5.00},
+    # Active copywriter model.
+    "anthropic/claude-3-5-sonnet-latest": {"input": 3.00, "output": 15.00},
+    # Keep historical pricing for old runs.
     "anthropic/claude-sonnet-4-20250514": {"input": 3.00, "output": 15.00},
 }
 

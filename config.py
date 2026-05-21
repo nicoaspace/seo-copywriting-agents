@@ -21,12 +21,13 @@ BRANDS_ROOT  = PROJECT_ROOT / "brands"
 SKILLS_DIR   = PROJECT_ROOT / "skills"
 ENV_FILE     = PROJECT_ROOT / "env" / ".env.local"
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────
+# ──────────────────────
 # Models
 # ──────────────────────────────────────────────────────────────────────────────
 
-GEMINI_MODEL = "gemini-2.5-flash"
-CLAUDE_MODEL = "anthropic/claude-sonnet-4-20250514"
+GEMINI_MODEL = "gemini-3-flash-preview"
+CLAUDE_MODEL = "anthropic/claude-sonnet-4-6"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # QA Loop
@@ -34,11 +35,6 @@ CLAUDE_MODEL = "anthropic/claude-sonnet-4-20250514"
 
 QUALITY_THRESHOLD  = 85   # Score out of 100 to pass QA (≥85 → APPROVE, <85 → REVISE)
 MAX_QA_ITERATIONS  = 3    # Max write→QA cycles before forced save
-
-# If the draft word count exceeds the SERP average by more than this percentage,
-# the word-count check escalates to CRITICAL (0 pts) instead of WARNING (1 pt).
-# Example: 10.0 means >10% over the SERP average → CRITICAL.
-WORD_COUNT_CRITICAL_OVERAGE_PCT = 10.0
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Sitemap error budget
@@ -136,38 +132,52 @@ assert not _orphan_folders, (
 del _missing_folders, _orphan_folders
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Word count limits per page type  (ideal_min, ideal_max, hard_max)
+# Word count hard caps per page type (single value: hard_max).
+#
+# Simplified model: the copywriter aims for the SERP "Average Word Count"
+# provided by the Researcher Agent in the research brief. The only fixed
+# limit per page type is the hard cap below — exceeding it is the only
+# word-count CRITICAL the QA agent flags. There is no ideal_min / ideal_max
+# anymore.
 #
 # Sources: Backlinko 11.8M results study (avg first-page = 1,447 words),
 # Yoast minimums, HubSpot/Orbit Media blog surveys, industry consensus.
-#
-# • ideal_min–ideal_max : target range the copywriter should aim for.
-# • hard_max             : absolute ceiling; QA flags CRITICAL if exceeded.
-#
-# When the research brief provides "Average Word Count" and "Recommended
-# Minimum Word Count", those override ideal_min/ideal_max respectively.
-# The hard_max is always max(page-type hard_max, research_brief_minimum × 1.2).
 # ──────────────────────────────────────────────────────────────────────────────
 
-PAGE_TYPE_WORD_LIMITS: dict[str, tuple[int, int, int]] = {
-    #                       ideal_min  ideal_max  hard_max
-    "landing-page":         (500,      1_000,     1_200),
-    "sales-page":           (2_000,    4_000,     5_000),
-    "service-page":         (1_000,    2_000,     2_200),
-    "product-page":         (800,      1_500,     1_700),
-    "blog-post":            (1_500,    2_500,     2_700),
-    "about-page":           (800,      1_500,     1_700),
-    "faq":                  (1_000,    2_000,     2_500),
-    "pillar-page":          (3_000,    5_000,     5_500),
-    "category-page":        (500,      1_000,     1_200),
-    "case-study":           (800,      1_500,     1_700),
-    "pricing-page":         (500,      1_000,     1_200),
-    "home-page":            (500,      1_000,     1_200),
+PAGE_TYPE_WORD_LIMITS: dict[str, int] = {
+    #                       hard_max
+    "landing-page":         1_200,
+    "sales-page":           5_000,
+    "service-page":         2_200,
+    "product-page":         1_700,
+    "blog-post":            2_500,
+    "about-page":           1_700,
+    "faq":                  2_500,
+    "pillar-page":          5_500,
+    "category-page":        1_200,
+    "case-study":           1_700,
+    "pricing-page":         1_200,
+    "home-page":            1_200,
 }
 
 # Multiplier: hard_max_words × TOKEN_WORD_FACTOR ≈ max_output_tokens.
-# Accounts for ~1.5 tokens/word (Spanish) × ~1.4 HTML overhead × ~1.2 buffer.
-TOKEN_WORD_FACTOR = 2.5
+#
+# Empirical breakdown for an HTML draft in Spanish:
+#   * plain text:           ~1.4 tokens / word
+#   * inline HTML markup:   ~+0.7 tokens / word (<p>, <h2>, <a>, <strong>...)
+#   * meta tags + JSON-LD:  ~+800 tokens fixed overhead
+#   * structural scaffolding (<head>/<body>/<section>): ~+200 tokens
+# So a 2,700-word blog post easily reaches ~7,500 tokens. A factor of 2.5
+# (the previous value) would cap at 6,750 — enough to truncate the closing
+# </html>, which then fails the structural pre-check and forces a wasted
+# revision loop. 3.5 gives a safe margin without ever approaching the
+# provider's 64k ceiling for the page types we generate.
+TOKEN_WORD_FACTOR = 3.5
+
+# Floor for max_output_tokens. Even tiny page types (1,200 hard cap) need
+# room for full HTML scaffolding + JSON-LD schema, so we never request less
+# than this from the model.
+MIN_OUTPUT_TOKENS = 4_000
 
 # Per-model max output token caps (provider-imposed ceilings). Used to clamp
 # the dynamic max_output_tokens computed from word limits so we never request
@@ -175,8 +185,14 @@ TOKEN_WORD_FACTOR = 2.5
 MODEL_MAX_OUTPUT_TOKENS: dict[str, int] = {
     # Gemini 2.5 Flash supports up to 65k output tokens.
     "gemini-2.5-flash": 65_000,
+    # Gemini 3 Flash Preview supports up to 64k output tokens.
+    "gemini-3-flash-preview": 64_000,
     # Claude Sonnet 4 supports up to 64k output tokens.
     "anthropic/claude-sonnet-4-20250514": 64_000,
+    # Claude Haiku 4.5 supports up to 64k output tokens.
+    "anthropic/claude-haiku-4-5": 64_000,
+    # Claude 3.5 Sonnet typically supports up to ~8k output tokens.
+    "anthropic/claude-3-5-sonnet-latest": 8_000,
 }
 DEFAULT_MODEL_MAX_OUTPUT_TOKENS = 8_000
 
@@ -221,7 +237,7 @@ _missing_limits = set(PAGE_TYPES) - set(PAGE_TYPE_WORD_LIMITS)
 _missing_refs   = set(PAGE_TYPES) - set(PAGE_TYPE_REFERENCES)
 assert not _missing_limits, (
     f"config.py: PAGE_TYPES missing from PAGE_TYPE_WORD_LIMITS: "
-    f"{sorted(_missing_limits)}. Add an (ideal_min, ideal_max, hard_max) tuple."
+    f"{sorted(_missing_limits)}. Add an integer hard_max value."
 )
 assert not _missing_refs, (
     f"config.py: PAGE_TYPES missing from PAGE_TYPE_REFERENCES: "

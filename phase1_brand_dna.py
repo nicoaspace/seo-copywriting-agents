@@ -3,7 +3,7 @@
 ⚠️  DEPRECATED — This file is kept for reference only.
 
 Brand DNA generation has been moved to the new multi-agent pipeline:
-    python main.py --brand <name> --use-dna false --url <url> ...
+    python main.py --brand <name> --run-dna true --url <url> ...
 
 See main.py and agents/brand_dna_agent.py for the current implementation.
 Scraping logic has been extracted to tools/web_scraper.py.
