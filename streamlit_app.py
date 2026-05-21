@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import io
+import json
 import os
 import re
 import subprocess
@@ -125,11 +126,54 @@ def _run_async_in_worker(coro_factory) -> object:
     return result.get("value")
 
 
+def _load_latest_researcher_checkpoint(brand: str, run_start_time: float | None = None) -> dict | None:
+    """Load the most recent after_SEOResearcherAgent checkpoint for a brand.
+
+    If run_start_time is provided (epoch seconds), only checkpoints created at
+    or after that time are considered so stale checkpoints from prior runs are
+    not shown.
+    """
+    ckpt_dir = brand_path(brand) / ".checkpoints"
+    if not ckpt_dir.exists():
+        return None
+    matches = sorted(ckpt_dir.glob("*__after_SEOResearcherAgent.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not matches:
+        return None
+    # Filter by run start time if supplied (with a small tolerance).
+    if run_start_time is not None:
+        matches = [p for p in matches if p.stat().st_mtime >= run_start_time - 5]
+    if not matches:
+        return None
+    try:
+        return json.loads(matches[0].read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _extract_links_from_brief(research_brief: str) -> dict:
+    """Extract the internal_links / authority_links JSON block from a research brief.
+
+    The researcher embeds a fenced ```json block that contains both lists.
+    Returns a dict with keys 'internal_links', 'authority_links', and optionally
+    'warning'. Returns an empty dict if nothing can be parsed.
+    """
+    if not research_brief:
+        return {}
+    # Match the first ```json ... ``` block that contains "internal_links".
+    m = re.search(r'```json\s*(\{.*?"internal_links".*?\})\s*```', research_brief, re.DOTALL)
+    if not m:
+        return {}
+    try:
+        return json.loads(m.group(1))
+    except Exception:
+        return {}
+
+
 def _build_args_namespace(form: dict) -> argparse.Namespace:
     """Create an argparse.Namespace mirroring what main.parse_args() returns."""
     ns = argparse.Namespace(
         brand=form["brand"].strip(),
-        use_dna="true" if form["use_dna"] else "false",
+        run_dna="true" if form["run_dna"] else "false",
         url=(form.get("url") or "").strip() or None,
         sitemap_url=(form.get("sitemap_url") or "").strip() or None,
         keyword=form["keyword"].strip(),
@@ -183,15 +227,15 @@ def _validate(form: dict) -> list[str]:
         errors.append("**Country** es obligatorio.")
 
     # Brand DNA flow
-    if form.get("use_dna"):
+    if form.get("run_dna"):
+        if not _is_valid_url(form.get("url") or ""):
+            errors.append("**Brand URL** es obligatoria y debe ser http(s) válida cuando generas nuevo Brand DNA.")
+    else:
         if brand and not _brand_has_dna(brand):
             errors.append(
                 f"`brands/{brand}/brand-dna.md` no existe. "
-                "Desmarca *Use existing Brand DNA* o crea primero el DNA."
+                "Marca *Generar nuevo Brand DNA* o crea primero el DNA."
             )
-    else:
-        if not _is_valid_url(form.get("url") or ""):
-            errors.append("**Brand URL** es obligatoria y debe ser http(s) válida cuando no usas DNA existente.")
 
     # Sitemap flow
     if form.get("use_sitemap"):
@@ -221,7 +265,7 @@ def _build_cli_command(args: argparse.Namespace) -> list[str]:
         "-u",  # force unbuffered stdout/stderr so output streams in real-time
         str(PROJECT_ROOT / "main.py"),
         "--brand", args.brand,
-        "--use-dna", args.use_dna,
+        "--run-dna", args.run_dna,
         "--use-sitemap", args.use_sitemap,
         "--keyword", args.keyword,
         "--topic", args.topic,
@@ -543,29 +587,29 @@ with top_right:
     with right_a:
         if is_new_brand:
             st.checkbox(
-                "Usar Brand DNA existente",
-                value=False,
+                "Generar nuevo Brand DNA",
+                value=True,
                 disabled=True,
                 help="Una marca nueva no tiene Brand DNA todavía — se generará desde la Brand URL.",
-                key="use_dna_disabled",
+                key="run_dna_disabled",
             )
-            use_dna = False
+            run_dna = True
         else:
-            use_dna = st.checkbox(
-                "Usar Brand DNA existente",
-                value=dna_exists,
+            run_dna = st.checkbox(
+                "Generar nuevo Brand DNA",
+                value=not dna_exists,
                 disabled=is_running,
-                help="Si está marcado, reutiliza `brands/{brand}/brand-dna.md`. "
-                     "Si no, se generará un nuevo DNA y se requiere la URL de la marca.",
-                key="use_dna",
+                help="Si está marcado, generará un nuevo Brand DNA usando la URL. "
+                     "Si no está marcado, reutiliza `brands/{brand}/brand-dna.md` si existe.",
+                key="run_dna",
             )
 
-    with right_b:
         url = st.text_input(
             "Brand URL",
             placeholder="https://siglo.com",
-            disabled=(use_dna or is_running),
-            help="Requerido si NO usas DNA existente (o si la marca es nueva).",
+            disabled=(not run_dna or is_running),
+            help="Requerido si generas nuevo Brand DNA o si la marca es nueva.",
+            key="url",
         )
 
     right_c, right_d = st.columns([1, 2])
@@ -730,7 +774,7 @@ if cancel_clicked and is_running:
 if submitted:
     form = {
         "brand": brand,
-        "use_dna": use_dna,
+        "run_dna": run_dna,
         "url": url,
         "sitemap_url": sitemap_url,
         "use_sitemap": use_sitemap,
@@ -805,41 +849,279 @@ if is_running:
 
     elapsed_s = int(time.time() - run_state.get("start_time", time.time()))
     elapsed_str = f"{elapsed_s // 60}m {elapsed_s % 60:02d}s" if elapsed_s >= 60 else f"{elapsed_s}s"
-    st.status(f"Ejecutando pipeline… ⏱ {elapsed_str}", expanded=True, state="running")
+
     with run_state["log_lock"]:
         current_log = run_state.get("log_buffer", "")
     if not current_log:
         current_log = _read_log_tail(run_state.get("log_path"))
 
     runtime = _derive_runtime_status(current_log)
-    st.progress(runtime["progress"], text=runtime["current_stage"])
-
     f = runtime["flags"]
-    state_lines = [
-        f"{'✅' if f['dna_loaded'] else '⏳'} Brand DNA",
-        f"{'✅' if f['sitemap_done'] else '⏳'} Sitemap/Inventory",
-        f"{'✅' if f['research_started'] else '⏳'} Researcher",
-        f"{'✅' if f['copywriter_started'] else '⏳'} Copywriter",
-        f"{'✅' if f['qa_started'] else '⏳'} QA",
-        f"{'✅' if f['saving_outputs'] else '⏳'} Guardado",
-    ]
-    # Show the funnel stage that was submitted for this run.
+    pct = int(runtime["progress"] * 100)
     _run_funnel = (run_state.get("last_args") or {}).get("funnel_stage", "auto")
     _funnel_icon = "🤖" if _run_funnel == "auto" else "📌"
-    state_lines.append(f"{_funnel_icon} Funnel: {_run_funnel}")
-    st.caption(" | ".join(state_lines))
 
-    if runtime["loop_iter"] > 0:
-        st.caption(
-            f"Loop Copywriter↔QA: iteración {runtime['loop_iter']} "
-            f"(Copywriter: {runtime['copywriter_runs']} | QA: {runtime['qa_runs']})"
+    # ── Pipeline status CSS (injected once per rerun) ────────────────────────
+    st.markdown("""
+    <style>
+    @keyframes pl-shimmer {
+      0%   { background-position: 200% center; }
+      100% { background-position: -200% center; }
+    }
+    @keyframes pl-agent-pulse {
+      0%, 100% { box-shadow: 0 0 6px rgba(59,130,246,.5); }
+      50%       { box-shadow: 0 0 20px rgba(59,130,246,.95); }
+    }
+    .pl-wrap {
+      background: var(--secondary-background-color);
+      border: 1px solid rgba(148,163,184,.18);
+      border-radius: 14px;
+      padding: 20px 24px 16px;
+      margin-bottom: 16px;
+    }
+    .pl-header {
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      gap: 14px;
+      margin-bottom: 16px;
+    }
+    .pl-title {
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: var(--text-color);
+      letter-spacing: .2px;
+    }
+    .pl-timer {
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: #22c55e;
+      font-family: monospace;
+      background: rgba(34,197,94,.12);
+      border: 1px solid rgba(34,197,94,.3);
+      border-radius: 8px;
+      padding: 3px 10px;
+    }
+    /* Progress bar wrapper — 50% wide, centered */
+    .pl-bar-outer {
+      width: 55%;
+      margin: 0 auto 8px;
+    }
+    .pl-track {
+      background: rgba(148,163,184,.15);
+      border-radius: 999px;
+      height: 28px;
+      width: 100%;
+      overflow: hidden;
+      border: 1px solid rgba(148,163,184,.2);
+    }
+    .pl-fill {
+      height: 100%;
+      border-radius: 999px;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      padding-right: 11px;
+      min-width: 44px;
+      background: linear-gradient(90deg,
+        #15803d 0%, #22c55e 30%, #4ade80 50%, #22c55e 70%, #15803d 100%);
+      background-size: 300% auto;
+      animation: pl-shimmer 5s linear infinite;
+      transition: width .6s ease;
+    }
+    .pl-fill.pl-done {
+      background: #16a34a;
+      animation: none;
+    }
+    .pl-pct {
+      color: #fff;
+      font-weight: 800;
+      font-size: 13px;
+      letter-spacing: .6px;
+      text-shadow: 0 1px 4px rgba(0,0,0,.7);
+    }
+    .pl-stage {
+      font-size: .85rem;
+      color: var(--text-color);
+      opacity: .65;
+      text-align: center;
+      margin-bottom: 20px;
+    }
+    /* Agent flow */
+    .pl-flow {
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      padding: 4px 0 6px;
+      gap: 0;
+    }
+    .pl-card {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 10px 14px;
+      border-radius: 12px;
+      min-width: 78px;
+      transition: all .3s ease;
+    }
+    .pl-card.pending {
+      background: rgba(148,163,184,.07);
+      border: 1px solid rgba(148,163,184,.13);
+      opacity: .35;
+    }
+    .pl-card.active {
+      background: rgba(59,130,246,.1);
+      border: 1.5px solid #3b82f6;
+      animation: pl-agent-pulse 2.2s ease-in-out infinite;
+      opacity: 1;
+    }
+    .pl-card.done {
+      background: rgba(34,197,94,.1);
+      border: 1px solid rgba(34,197,94,.4);
+      opacity: 1;
+    }
+    .pl-emoji { font-size: 2rem; line-height: 1; margin-bottom: 6px; }
+    .pl-name  { font-size: .72rem; font-weight: 700; color: var(--text-color); text-align: center; white-space: nowrap; }
+    .pl-dot   { width: 8px; height: 8px; border-radius: 50%; margin-top: 7px; }
+    .pl-dot.done    { background: #22c55e; }
+    .pl-dot.active  { background: #3b82f6; }
+    .pl-dot.pending { background: rgba(148,163,184,.25); }
+    .pl-arrow {
+      color: rgba(148,163,184,.3);
+      font-size: 1.3rem;
+      flex-shrink: 0;
+      padding-top: 22px;
+      margin: 0 4px;
+      user-select: none;
+    }
+    /* Meta badges */
+    .pl-meta {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid rgba(148,163,184,.12);
+    }
+    .pl-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      background: rgba(148,163,184,.1);
+      border: 1px solid rgba(148,163,184,.2);
+      border-radius: 20px;
+      padding: 4px 12px;
+      font-size: .78rem;
+      font-weight: 600;
+      color: var(--text-color);
+      opacity: .8;
+    }
+    .pl-badge.loop {
+      border-color: rgba(59,130,246,.4);
+      background: rgba(59,130,246,.1);
+      color: #93c5fd;
+      opacity: 1;
+    }
+    .pl-badge.route {
+      border-color: rgba(167,139,250,.4);
+      background: rgba(124,58,237,.1);
+      color: #c4b5fd;
+      opacity: 1;
+      max-width: 340px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # ── Build agent cards ─────────────────────────────────────────────────────
+    # Steps: index 0 (dna_loaded) and 1 (sitemap_done) are instant-completion
+    # events. As soon as their flag is True the card is DONE — never "active".
+    # Long-running agents (indices 2-5) show as "active" while running.
+    _steps = [
+        {"key": "dna_loaded",         "emoji": "🧬", "label": "Brand DNA"},
+        {"key": "sitemap_done",        "emoji": "🗺️",  "label": "Sitemap"},
+        {"key": "research_started",    "emoji": "🔍", "label": "Researcher"},
+        {"key": "copywriter_started",  "emoji": "✍️",  "label": "Copywriter"},
+        {"key": "qa_started",          "emoji": "🧪", "label": "QA"},
+        {"key": "saving_outputs",      "emoji": "💾", "label": "Guardado"},
+    ]
+    _instant_indices = {0, 1}  # dna_loaded and sitemap_done are instant events
+
+    flag_values = [bool(f[s["key"]]) for s in _steps]
+    last_true = max((i for i, v in enumerate(flag_values) if v), default=-1)
+
+    # Determine which step index is currently "active"
+    if f["completed"]:
+        active_idx = -1
+    elif last_true == -1:
+        active_idx = 0  # nothing started yet; first card pulsing
+    elif last_true in _instant_indices:
+        # Instant step is done; next step is where work is happening
+        active_idx = min(last_true + 1, len(_steps) - 1)
+    else:
+        active_idx = last_true  # long-running agent is still going
+
+    cards_html = ""
+    for i, s in enumerate(_steps):
+        if f["completed"]:
+            cls = "done"
+        elif i == active_idx:
+            cls = "active"
+        elif flag_values[i] or i < active_idx:
+            cls = "done"
+        else:
+            cls = "pending"
+        cards_html += (
+            f'<div class="pl-card {cls}">'
+            f'<div class="pl-emoji">{s["emoji"]}</div>'
+            f'<div class="pl-name">{s["label"]}</div>'
+            f'<div class="pl-dot {cls}"></div>'
+            f'</div>'
         )
+        if i < len(_steps) - 1:
+            cards_html += '<div class="pl-arrow">›</div>'
 
+    # ── Meta badges ──────────────────────────────────────────────────────────
+    meta_html = f'<span class="pl-badge">{_funnel_icon} Funnel: {_run_funnel}</span>'
+    if runtime["loop_iter"] > 0:
+        meta_html += (
+            f'<span class="pl-badge loop">'
+            f'🔁 Loop iter {runtime["loop_iter"]}'
+            f' &nbsp;·&nbsp; ✍️ ×{runtime["copywriter_runs"]}'
+            f' &nbsp;·&nbsp; 🧪 ×{runtime["qa_runs"]}'
+            f'</span>'
+        )
     if runtime["transitions"]:
-        if len(runtime["transitions"]) >= 2:
-            last_transition = f"{runtime['transitions'][-2]} → {runtime['transitions'][-1]}"
-            st.caption(f"Transición más reciente: {last_transition}")
-        st.caption("Ruta de agentes: " + " → ".join(runtime["transitions"]))
+        route_str = " › ".join(runtime["transitions"])
+        meta_html += f'<span class="pl-badge route" title="{route_str}">🛤️ {route_str}</span>'
+
+    fill_cls  = "pl-done" if f["completed"] else ""
+    pct_label = "100%" if f["completed"] else f"{pct}%"
+
+    st.markdown(f"""
+    <div class="pl-wrap">
+      <div class="pl-header">
+        <span class="pl-title">⚙️ Ejecutando pipeline…</span>
+        <span class="pl-timer">⏱ {elapsed_str}</span>
+      </div>
+      <div class="pl-bar-outer">
+        <div class="pl-track">
+          <div class="pl-fill {fill_cls}" style="width:{pct}%">
+            <span class="pl-pct">{pct_label}</span>
+          </div>
+        </div>
+      </div>
+      <div class="pl-stage">{runtime["current_stage"]}</div>
+      <div class="pl-flow">{cards_html}</div>
+      <div class="pl-meta">{meta_html}</div>
+    </div>
+    """, unsafe_allow_html=True)
 
     st.code(current_log or "(sin salida aún)", language="text")
 
@@ -916,6 +1198,62 @@ if not st.session_state.run_state.get("is_running") and st.session_state.run_sta
                     dna_text = dna_path.read_text(encoding="utf-8", errors="replace")
                     with st.expander("Ver Brand DNA", expanded=False):
                         st.markdown(dna_text)
+
+        # ── Suggested internal / authority links ──────────────────────────
+        _brand_name = (st.session_state.run_state.get("last_args") or {}).get("brand", "")
+        _start_ts = st.session_state.run_state.get("start_time")
+        if _brand_name:
+            _ckpt = _load_latest_researcher_checkpoint(_brand_name, run_start_time=_start_ts)
+            if _ckpt:
+                _brief = _ckpt.get("research_brief", "")
+                _links_data = _extract_links_from_brief(_brief)
+                _int_links = _links_data.get("internal_links") or []
+                _auth_links = _links_data.get("authority_links") or []
+                _warn = _links_data.get("warning", "")
+
+                if _int_links:
+                    with st.expander(f"🔗 Suggested Internal Links ({len(_int_links)})", expanded=True):
+                        st.caption(
+                            "Todos los internal links sugeridos por el Researcher. "
+                            "Cópialos al HTML si quieres usar un link diferente al que eligió el Copywriter."
+                        )
+                        for lnk in _int_links:
+                            _url = lnk.get("target_url", "")
+                            _anchor = lnk.get("anchor_text", _url)
+                            _hint = lnk.get("placement_hint", "")
+                            _reason = lnk.get("reason", "")
+                            _score = lnk.get("relevance_score", "")
+                            st.markdown(
+                                f"**[{_anchor}]({_url})**  \n"
+                                f"`{_url}`  \n"
+                                + (f"📍 *{_hint}*  " if _hint else "")
+                                + (f"Score: **{_score}**  " if _score != "" else "")
+                                + (f"\n> {_reason}" if _reason else "")
+                            )
+                            st.divider()
+
+                if _auth_links:
+                    with st.expander(f"🌐 Suggested Authority Links ({len(_auth_links)})", expanded=False):
+                        st.caption("Links externos de autoridad sugeridos por el Researcher.")
+                        for lnk in _auth_links:
+                            _url = lnk.get("target_url", "")
+                            _anchor = lnk.get("anchor_text", _url)
+                            _hint = lnk.get("placement_hint", "")
+                            _reason = lnk.get("reason", "")
+                            _score = lnk.get("relevance_score", "")
+                            _ctx = lnk.get("context_snippet", "")
+                            st.markdown(
+                                f"**[{_anchor}]({_url})**  \n"
+                                f"`{_url}`  \n"
+                                + (f"📍 *{_hint}*  " if _hint else "")
+                                + (f"Score: **{_score}**  " if _score != "" else "")
+                                + (f"\n> {_ctx}" if _ctx else "")
+                                + (f"\n_{_reason}_" if _reason else "")
+                            )
+                            st.divider()
+
+                if _warn:
+                    st.warning(f"⚠️ {_warn}")
 
         with st.expander("Log de la última ejecución", expanded=False):
             st.code(final_log, language="text")
