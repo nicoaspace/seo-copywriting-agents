@@ -11,7 +11,7 @@ Runs a 4-phase sequential pipeline using Google ADK:
 SITEMAP & INTERNAL LINKS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  --use-sitemap and --sitemap-url work together, just like --use-dna and --url:
+  --use-sitemap and --sitemap-url work together, just like --run-dna and --url:
 
     --use-sitemap false  (requires --sitemap-url)
         Fetches and parses the sitemap at --sitemap-url, scrapes page titles,
@@ -31,24 +31,25 @@ USAGE EXAMPLES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   # First run — generate brand DNA + build URL inventory from the sitemap:
-  python main.py --brand "Siglo BPO" --use-dna false --url https://siglo.com \\
+  python main.py --brand "Siglo BPO" --run-dna true --url https://siglo.com \\
       --use-sitemap false --sitemap-url https://siglo.com/sitemap.xml \\
       --keyword "outsourcing que es" --topic "Outsourcing en México: qué es" \\
       --page-type blog-post --language es --country méxico --format html
 
   # Subsequent runs — reuse existing DNA + existing inventory (fastest):
-  python main.py --brand "Siglo BPO" --use-dna true --use-sitemap true \\
+  python main.py --brand "Siglo BPO" --run-dna true --use-sitemap true \\
       --keyword "asesoría contable" --topic "Asesoría contable para empresas" \\
       --page-type service-page --language es --country méxico --format html
 
   # Refresh only the URL inventory (DNA already exists, sitemap changed):
-  python main.py --brand "Siglo BPO" --use-dna true \\
+  python main.py --brand "Siglo BPO" --run-dna false \
+\
       --use-sitemap false --sitemap-url https://siglo.com/sitemap.xml \\
       --keyword "outsourcing nómina" --topic "Outsourcing de nómina México" \\
       --page-type service-page --language es --country méxico --format html
 
   # With manually specified internal links (overrides the inventory-based links):
-  python main.py --brand "Siglo BPO" --use-dna true --use-sitemap true \\
+  python main.py --brand "Siglo BPO" --run-dna true --use-sitemap true \\
       --keyword "outsourcing nómina" --topic "Outsourcing de nómina México" \\
       --page-type service-page --language es --country méxico --format html \\
       --internal-links "https://siglo.com/nomina,https://siglo.com/rrhh"
@@ -85,6 +86,7 @@ from config import (
     next_version_number,
 )
 from token_tracker import TokenTracker
+from agent_logger import AgentExecutionLogger
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Test mode — set True to save intermediate agent outputs for debugging
@@ -102,6 +104,102 @@ def _ts() -> str:
     return f"{m}m {s:02d}s"
 
 
+def _audit_research_brief(brief_text: str, current_year: int) -> None:
+    """Print warnings for stale years and dead URLs in the saved research brief.
+
+    Defensive scan executed at save time. Does NOT modify the brief or block
+    the pipeline — purely an alarm so the operator notices when the agent
+    smuggles training-cutoff data past the deterministic SERP tools.
+
+    Checks:
+      1. Any concrete year between (current_year - 9) and (current_year - 2)
+         that is not anchored to a recognised event keyword (reforma, ley,
+         decreto, estudio, etc.) is logged as suspicious.
+      2. Every http(s) URL is HEAD-probed in parallel; non-2xx/3xx are logged.
+    """
+    if not brief_text:
+        return
+
+    import re as _re
+    # 1. Stale-year scan
+    suspicious_year_floor = current_year - 9
+    suspicious_year_ceil = current_year - 2
+    anchor_kw = _re.compile(
+        r"reform[ao]|ley|decreto|publicad[ao]|aprobad[ao]|estudio|encuesta|"
+        r"censo|reglamento|sentencia|circular|d\.o\.f|dof",
+        _re.IGNORECASE,
+    )
+    stale_years: list[tuple[int, str]] = []
+    for m in _re.finditer(r"\b(20\d{2})\b", brief_text):
+        year = int(m.group(1))
+        if not (suspicious_year_floor <= year <= suspicious_year_ceil):
+            continue
+        # Inspect a 60-char window around the match for an anchor keyword.
+        start, end = max(0, m.start() - 60), min(len(brief_text), m.end() + 60)
+        window = brief_text[start:end]
+        if anchor_kw.search(window):
+            continue
+        snippet = window.strip().replace("\n", " ")
+        stale_years.append((year, snippet[:120]))
+
+    if stale_years:
+        print(
+            f"  ⚠ Brief contains {len(stale_years)} unanchored past-year "
+            f"reference(s) (current_year={current_year}):"
+        )
+        for year, snippet in stale_years[:5]:
+            print(f"      · {year} → '…{snippet}…'")
+        if len(stale_years) > 5:
+            print(f"      · (+{len(stale_years) - 5} more)")
+
+    # 2. URL probe (only http/https, dedup)
+    urls = sorted({m.group(0).rstrip(".,);]") for m in _re.finditer(
+        r"https?://[^\s)<>\"'\]]+", brief_text
+    )})
+    if not urls:
+        return
+
+    try:
+        import httpx
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+    except Exception:
+        return
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        ),
+    }
+
+    def _probe(url: str) -> tuple[str, int | str]:
+        try:
+            with httpx.Client(timeout=6.0, headers=headers, follow_redirects=True) as c:
+                r = c.head(url)
+                if r.status_code in (403, 405, 501):
+                    r = c.get(url)
+                return url, r.status_code
+        except Exception as exc:
+            return url, f"err:{type(exc).__name__}"
+
+    dead: list[tuple[str, int | str]] = []
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        for fut in as_completed([pool.submit(_probe, u) for u in urls]):
+            url, status = fut.result()
+            if isinstance(status, int):
+                if status >= 400:
+                    dead.append((url, status))
+            else:
+                dead.append((url, status))
+
+    if dead:
+        print(f"  ⚠ Brief contains {len(dead)} dead/unreachable URL(s):")
+        for url, status in dead[:8]:
+            print(f"      · [{status}] {url}")
+        if len(dead) > 8:
+            print(f"      · (+{len(dead) - 8} more)")
+
+
 def _safe_state_for_checkpoint(state: dict) -> dict:
     """Return a JSON-serialisable shallow copy of *state* for checkpointing (C5).
 
@@ -110,7 +208,7 @@ def _safe_state_for_checkpoint(state: dict) -> dict:
     """
     if not state:
         return {}
-    skip = {"_tracker", "_audit_events"}
+    skip = {"_tracker", "_audit_events", "_agent_logger"}
     return {k: v for k, v in state.items() if k not in skip}
 
 
@@ -239,10 +337,10 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--brand", required=True,
                         help="Brand identifier (folder name under brands/)")
-    parser.add_argument("--use-dna", required=True, choices=["true", "false"],
-                        help="'true' = use existing brand-dna.md, 'false' = generate new")
+    parser.add_argument("--run-dna", required=True, choices=["true", "false"],
+                        help="'true' = run a new Brand DNA generation (requires --url); 'false' = use existing brand-dna.md")
     parser.add_argument("--url", default=None,
-                        help="Brand website URL (required if --use-dna false)")
+                        help="Brand website URL (required if --run-dna true)")
     parser.add_argument("--sitemap-url", default=None,
                         dest="sitemap_url",
                         help=("Brand sitemap XML URL (required if --use-sitemap false). "
@@ -309,16 +407,14 @@ def parse_args() -> argparse.Namespace:
         args.internal_links = ", ".join(deduped)
 
     # Validation
-    if args.use_dna == "false" and not args.url:
-        parser.error("--url is required when --use-dna is false")
+    if args.run_dna == "true" and not args.url:
+        parser.error("--url is required when --run-dna true")
 
-    if args.use_dna == "true":
+    if args.run_dna == "false":
         dna_path = brand_path(args.brand) / "brand-dna.md"
         if not dna_path.exists():
-            parser.error(
-                f"--use-dna true but brands/{args.brand}/brand-dna.md not found. "
-                f"Run with --use-dna false --url <brand-url> first."
-            )
+            print(f"  ⚠ No se encontró el Brand DNA para '{args.brand}'. Se ejecutará el proceso de Brand DNA de todos modos.")
+            args.run_dna = "true"
 
     # Sitemap config requirements
     brand_dir = brand_path(args.brand)
@@ -344,15 +440,19 @@ def parse_args() -> argparse.Namespace:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def build_pipeline(
-    use_dna: bool,
+    run_dna: bool,
     page_type: str = "blog-post",
     language: str = "es",
+    funnel_stage: str = "auto",
 ) -> Agent:
     """Build the full agent pipeline."""
     sub_agents = []
 
     # Phase 1: Brand DNA (conditional)
-    if not use_dna:
+    # run_dna=true means generate a new Brand DNA document. If the resolved
+    # funnel stage is TOFU, the Brand DNA should still be generated but the
+    # Copywriter and QA agents will omit it from the final output.
+    if run_dna:
         sub_agents.append(create_brand_dna_agent())
 
     # Phase 2: SEO Researcher
@@ -376,10 +476,52 @@ def build_pipeline(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Agent debug logging helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+_AGENT_INPUT_STATE_KEYS: dict[str, list[str]] = {
+    "BrandDNAAgent": [
+        "brand_name", "brand_url", "run_dna", "language", "country", "page_type",
+    ],
+    "SEOResearcherAgent": [
+        "brand_dna", "keyword", "secondary_keywords", "topic", "page_type",
+        "language", "country", "format", "funnel_stage", "funnel_stage_mode",
+        "resolved_funnel_stage", "link_opportunities", "url_inventory_size",
+        "current_date", "current_year",
+    ],
+    "SEOCopywriterAgent": [
+        "research_brief", "brand_dna", "keyword", "topic", "page_type",
+        "draft_content", "qa_feedback", "internal_links", "internal_links_mode",
+        "format", "resolved_funnel_stage", "word_count_avg", "word_count_hard_cap",
+        "word_count_brief", "structural_validation",
+    ],
+    "QAAgent": [
+        "draft_content", "research_brief", "keyword", "format",
+        "structural_validation", "qa_feedback", "word_count_last_metrics",
+        "copywriter_word_check",
+    ],
+}
+
+
+def _build_agent_input_hint(agent_name: str, state: dict, user_message: str) -> str:
+    """Build a per-agent input snapshot from session state + the user message."""
+    sections = [f"--- user_message ---\n{user_message}"]
+    for key in _AGENT_INPUT_STATE_KEYS.get(agent_name, []):
+        val = state.get(key)
+        if val is None or val == "":
+            continue
+        text = val if isinstance(val, str) else json.dumps(val, ensure_ascii=False, default=str)
+        if len(text) > 8000:
+            text = text[:8000] + "\n... [truncated]"
+        sections.append(f"--- state.{key} ---\n{text}")
+    return "\n\n".join(sections)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Pipeline execution
 # ──────────────────────────────────────────────────────────────────────────────
 
-async def run_pipeline(args: argparse.Namespace, tracker: TokenTracker) -> dict:
+async def run_pipeline(args: argparse.Namespace, tracker: TokenTracker, agent_logger: AgentExecutionLogger | None = None) -> dict:
     """Execute the pipeline and return final state."""
 
     # Reset per-run web-search soft-limit counter (M1).
@@ -387,9 +529,10 @@ async def run_pipeline(args: argparse.Namespace, tracker: TokenTracker) -> dict:
     reset_batch_search_counter()
 
     pipeline = build_pipeline(
-        use_dna=(args.use_dna == "true"),
+        run_dna=(args.run_dna == "true"),
         page_type=args.page_type,
         language=args.language,
+        funnel_stage=args.funnel_stage,
     )
 
     # ── URL inventory: build new or load existing ─────────────────────────────
@@ -437,6 +580,15 @@ async def run_pipeline(args: argparse.Namespace, tracker: TokenTracker) -> dict:
     # Funnel stage mode: 'auto' = Researcher recommends; 'manual' = user-specified.
     funnel_stage_mode = "auto" if args.funnel_stage == "auto" else "manual"
 
+    # Temporal anchors injected into agent prompts so neither the researcher
+    # nor the copywriter falls back to a year drawn from training-cutoff
+    # memory (which historically produced phrases like "in 2024" inside a
+    # 2026 brief). The researcher SKILL hard-rules: any concrete year that
+    # is not anchored to a verifiable, dated event must be omitted.
+    _now = datetime.now(timezone.utc)
+    current_date_iso = _now.strftime("%Y-%m-%d")
+    current_year_str = _now.strftime("%Y")
+
     # Prepare initial state
     initial_state = {
         "brand_name": args.brand,
@@ -449,8 +601,12 @@ async def run_pipeline(args: argparse.Namespace, tracker: TokenTracker) -> dict:
         "format": args.output_format,
         "internal_links": args.internal_links,
         "internal_links_mode": internal_links_mode,
+        "run_dna": args.run_dna,
         "funnel_stage": args.funnel_stage,
+        "resolved_funnel_stage": args.funnel_stage if args.funnel_stage != "auto" else "",
         "funnel_stage_mode": funnel_stage_mode,
+        "current_date": current_date_iso,
+        "current_year": current_year_str,
         "url_inventory_size": len(url_inventory),
         "qa_feedback": "",
         "research_brief": "",
@@ -458,13 +614,35 @@ async def run_pipeline(args: argparse.Namespace, tracker: TokenTracker) -> dict:
         "brand_dna": "",
         "link_opportunities": "",
         "structural_validation": "STRUCTURAL: (pending — first iteration not yet drafted)",
+        # Word-count targets (populated by copywriter before-callback before
+        # the SKILL prompt is rendered). Pre-seed empty values so ADK's
+        # template substitution does not raise on the first agent that
+        # references them.
+        "word_count_avg": "",
+        "word_count_hard_cap": "",
+        "word_count_brief": "",
+        "word_count_last_metrics": "",
     }
 
-    # Load existing brand DNA if --use-dna true
-    if args.use_dna == "true":
+    # Load existing Brand DNA only when run_dna is false and the funnel stage is MOFU/BOFU.
+    # Do not provide Brand DNA to any agent when the stage is TOFU or when the funnel stage selection is auto.
+    if args.run_dna == "false":
         dna_path = brand_path(args.brand) / "brand-dna.md"
-        initial_state["brand_dna"] = dna_path.read_text(encoding="utf-8")
-        print(f"  ✓ Loaded existing Brand DNA ({len(initial_state['brand_dna']):,} chars)")
+        if dna_path.exists():
+            if args.funnel_stage in ("MOFU", "BOFU"):
+                initial_state["brand_dna"] = dna_path.read_text(encoding="utf-8")
+                print(f"  ✓ Loaded existing Brand DNA ({len(initial_state['brand_dna']):,} chars)")
+            else:
+                print(
+                    "  ✓ Funnel stage is auto or TOFU: Brand DNA is omitted from agent input "
+                    "so no company-specific voice or messaging is used."
+                )
+        else:
+            print(
+                "  ⚠ run_dna=false but no existing Brand DNA found. "
+                "The pipeline will generate Brand DNA instead."
+            )
+            args.run_dna = "true"
 
     # Add URL for brand DNA generation
     if args.url:
@@ -595,7 +773,27 @@ async def run_pipeline(args: argparse.Namespace, tracker: TokenTracker) -> dict:
     # Track each iteration's outputs for debug saving
     _iterations: list[dict] = []  # [{draft: str, qa: str}, ...]
     _current_iter: dict = {}
-    _last_copywriter_text: str = ""
+    _agent_text_by_author: dict[str, str] = {}
+
+    async def _finalize_agent_log(agent_name: str | None) -> None:
+        """Close the current agent execution in the debug logger."""
+        if agent_logger is None or not agent_name:
+            return
+        phase = _phases.get(agent_name, {})
+        prior_state = None
+        if session_service:
+            prior_state = await session_service.get_session(
+                app_name="seo-copywriting",
+                user_id="user",
+                session_id=session.id,
+            )
+        agent_logger.record_agent_output(
+            agent_name=agent_name,
+            output_text=_agent_text_by_author.get(agent_name, ""),
+            tokens_in=phase.get("tokens_in", 0),
+            tokens_out=phase.get("tokens_out", 0),
+            state_after=dict(prior_state.state) if prior_state else {},
+        )
 
     # Audit trail (I2): one JSON record per ADK event for forensic replay.
     _audit_events: list[dict] = []
@@ -627,15 +825,15 @@ async def run_pipeline(args: argparse.Namespace, tracker: TokenTracker) -> dict:
                 if fc:
                     rec["tool_calls"].append({
                         "name": fc.name,
-                        "args_preview": str(dict(fc.args))[:300] if fc.args else "",
+                        "args_preview": str(dict(fc.args)) if fc.args else "",
                     })
                 elif fr:
                     rec["tool_results"].append({
                         "name": fr.name,
-                        "response_preview": str(fr.response)[:300].replace("\n", " "),
+                        "response_preview": str(fr.response).replace("\n", " "),
                     })
                 elif tx:
-                    rec["text_preview"] = tx[:300].replace("\n", " ")
+                    rec["text_preview"] = tx.replace("\n", " ")
                     rec["text_chars"] = len(tx)
         _audit_events.append(rec)
 
@@ -667,6 +865,10 @@ async def run_pipeline(args: argparse.Namespace, tracker: TokenTracker) -> dict:
                     _current_iter = {}
                 # M10: mark the previous phase as completed before moving on.
                 _phase_complete(_current_author)
+                # Log agent output if there was a previous agent
+                if _current_author is not None and agent_logger is not None:
+                    agent_logger.record_agent_handoff(_current_author, author)
+                await _finalize_agent_log(_current_author)
                 # C5: snapshot session state to disk before the next agent
                 # starts. If the pipeline crashes mid-run we keep all upstream
                 # work (Brand DNA, research brief, prior drafts).
@@ -688,37 +890,64 @@ async def run_pipeline(args: argparse.Namespace, tracker: TokenTracker) -> dict:
                 _current_author = author
                 print(f"  [{_ts()}] ┌─ [{author}] started")
                 _phase_start(author)
+                # Log agent start
+                if agent_logger is not None:
+                    sess = await session_service.get_session(
+                        app_name="seo-copywriting",
+                        user_id="user",
+                        session_id=session.id,
+                    ) if session_service else None
+                    state_before = dict(sess.state) if sess else {}
+                    agent_logger.record_agent_start(
+                        agent_name=author,
+                        input_text=_build_agent_input_hint(author, state_before, user_message),
+                        state_before=state_before,
+                    )
 
             content = getattr(event, "content", None)
             if not content or not content.parts:
                 continue
 
             for part in content.parts:
-                # Tool call
+                # Tool call — print full args (single line, no truncation)
                 if getattr(part, "function_call", None):
                     fc = part.function_call
-                    args_preview = str(dict(fc.args))[:120] if fc.args else ""
-                    print(f"  [{_ts()}] │  → tool call: {fc.name}({args_preview})")
-                # Tool response
+                    args_full = str(dict(fc.args)).replace("\n", " ") if fc.args else ""
+                    print(f"  [{_ts()}] │  → tool call: {fc.name}({args_full})")
+                    # Log tool call
+                    if agent_logger is not None and author:
+                        agent_logger.record_tool_call(
+                            agent_name=author,
+                            tool_name=fc.name,
+                            args=dict(fc.args) if fc.args else {},
+                        )
+                # Tool response — print full response (single line, no truncation)
                 elif getattr(part, "function_response", None):
                     fr = part.function_response
-                    resp_preview = str(fr.response)[:120].replace("\n", " ")
-                    print(f"  [{_ts()}] │  ← tool result: [{fr.name}] {resp_preview}")
-                # Text
+                    resp_full = str(fr.response).replace("\n", " ")
+                    print(f"  [{_ts()}] │  ← tool result: [{fr.name}] {resp_full}")
+                    # Log tool result
+                    if agent_logger is not None and author:
+                        agent_logger.record_tool_result(
+                            agent_name=author,
+                            tool_name=fr.name,
+                            result=str(fr.response),
+                            success=True,
+                        )
+                # Text — print full text (preserve line breaks)
                 elif getattr(part, "text", None):
                     full_text = part.text
-                    preview = full_text[:200].replace("\n", " ")
                     is_final = getattr(event, "is_final_response", lambda: False)
                     if callable(is_final):
                         is_final = is_final()
                     marker = f"  [{_ts()}] └─" if is_final else f"  [{_ts()}] │ "
-                    print(f"{marker} {preview}{'...' if len(full_text) > 200 else ''}")
+                    print(f"{marker} {full_text}")
                     if is_final:
                         print()
 
-                    # Capture iteration outputs
+                    # Capture per-agent output and iteration artifacts
+                    _agent_text_by_author[author] = full_text
                     if author == "SEOCopywriterAgent":
-                        _last_copywriter_text = full_text
                         _current_iter["draft"] = full_text
                     elif author == "QAAgent" and not getattr(part, "function_call", None):
                         _current_iter["qa"] = full_text
@@ -727,6 +956,13 @@ async def run_pipeline(args: argparse.Namespace, tracker: TokenTracker) -> dict:
         pipeline_error = exc
         print(f"\n  [{_ts()}] ✗ Pipeline error: {exc}")
         print(f"  [{_ts()}] ▸ Attempting to save partial outputs...\n")
+        # Log agent error
+        if agent_logger is not None and _current_author:
+            agent_logger.record_agent_error(
+                agent_name=_current_author,
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+            )
         # M10: mark the running phase as failed with structured error info.
         if _current_author:
             rec = _phases.setdefault(_current_author, {
@@ -765,6 +1001,9 @@ async def run_pipeline(args: argparse.Namespace, tracker: TokenTracker) -> dict:
         if _phases[_current_author].get("status") == "running":
             _phase_complete(_current_author)
 
+    # Close the last agent in the debug logger (not covered by author-switch).
+    await _finalize_agent_log(_current_author)
+
     # Retrieve state (even on partial failure — agents may have written to session)
     updated_session = await session_service.get_session(
         app_name="seo-copywriting",
@@ -780,10 +1019,12 @@ async def run_pipeline(args: argparse.Namespace, tracker: TokenTracker) -> dict:
     if _current_author is not None and updated_session is not None:
         _write_checkpoint(brand_dir, f"final_{_current_author}", state)
 
-    # Attach iterations and tracker for debug saving
+    # Attach iterations, tracker, and logger for debug saving
     state["_iterations"] = _iterations
     state["_tracker"] = tracker
     state["_audit_events"] = _audit_events
+    if agent_logger is not None:
+        state["_agent_logger"] = agent_logger
     # M10: surface the structured per-phase log in the final state and as a
     # one-line console summary so failures are immediately attributable.
     state["_pipeline_phases"] = _phases
@@ -814,6 +1055,9 @@ async def run_pipeline(args: argparse.Namespace, tracker: TokenTracker) -> dict:
 
     if pipeline_error:
         print(f"  ✘ Pipeline failed — saving partial outputs from session state.")
+
+    if agent_logger is not None:
+        agent_logger.save_session()
 
     return state
 
@@ -863,9 +1107,14 @@ def save_outputs(args: argparse.Namespace, state: dict) -> tuple[Path, Path | No
     output_dir = brand_dir / folder_name
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Resolve version number and naming components
-    keyword_slug = slugify(args.keyword)
-    version = next_version_number(args.brand, args.page_type, keyword_slug)
+    # keyword_slug and version from agent logger when available (matches .tmp/agents session)
+    agent_logger = state.pop("_agent_logger", None)
+    if agent_logger is None:
+        keyword_slug = slugify(args.keyword)
+        version = next_version_number(args.brand, args.page_type, keyword_slug)
+    else:
+        keyword_slug = agent_logger.keyword
+        version = agent_logger.version
     date_str = datetime.now(timezone.utc).strftime("%Y_%m_%d")
     ext = "html" if args.output_format == "html" else "md"
     base_name = f"{date_str}__version_{version}__{keyword_slug}"
@@ -895,6 +1144,18 @@ def save_outputs(args: argparse.Namespace, state: dict) -> tuple[Path, Path | No
             watermarked = watermarked.rstrip() + "\n\n" + note
         content_file.write_text(watermarked, encoding="utf-8")
         print(f"  ✓ Content saved:  {content_file.relative_to(PROJECT_ROOT)}")
+
+        # Final hard-cap warning (Option A): print loud warning, still save.
+        wc = state.get("copywriter_word_check") or {}
+        wc_status = wc.get("status", "")
+        if wc_status == "above_hard_cap":
+            print(
+                f"  ⚠ FINAL DRAFT IS OVER THE HARD CAP: "
+                f"{wc.get('word_count', '?')} words "
+                f"(hard_cap={wc.get('hard_cap', '?')}, "
+                f"avg={wc.get('avg_word_count', '?')}). "
+                f"Content saved anyway — review before publishing."
+            )
     else:
         print(f"  ⚠ draft_content is empty — skipping content file")
 
@@ -914,7 +1175,7 @@ def save_outputs(args: argparse.Namespace, state: dict) -> tuple[Path, Path | No
 
     # Save brand DNA if newly generated
     dna_file = None
-    if args.use_dna == "false" and state.get("brand_dna"):
+    if args.run_dna == "true" and state.get("brand_dna"):
         brand_dir.mkdir(parents=True, exist_ok=True)
         dna_file = brand_dir / "brand-dna.md"
         dna_file.write_text(state["brand_dna"], encoding="utf-8")
@@ -935,8 +1196,16 @@ def save_outputs(args: argparse.Namespace, state: dict) -> tuple[Path, Path | No
                 p = debug_dir / filename
                 p.write_text(val, encoding="utf-8")
                 print(f"  ✓ [TEST] {key:<18} → {p.relative_to(PROJECT_ROOT)}")
+                if key == "research_brief":
+                    try:
+                        _cy = int(state.get("current_year") or datetime.now(timezone.utc).year)
+                        _audit_research_brief(val, _cy)
+                    except Exception as exc:
+                        print(f"  ⚠ Brief audit skipped: {type(exc).__name__}: {exc}")
 
-        # Save each iteration's draft and QA report
+        # Save each iteration's draft and QA report. We always write the QA
+        # file (even when empty) so a missing/silent QA turn is never invisible
+        # to the operator.
         for i, it in enumerate(iterations, 1):
             draft = it.get("draft", "")
             qa = it.get("qa", "")
@@ -944,10 +1213,19 @@ def save_outputs(args: argparse.Namespace, state: dict) -> tuple[Path, Path | No
                 p = debug_dir / f"iteration_{i}_draft.{ext}"
                 p.write_text(draft, encoding="utf-8")
                 print(f"  ✓ [TEST] iteration_{i}_draft  → {p.relative_to(PROJECT_ROOT)}")
+            p = debug_dir / f"iteration_{i}_qa.md"
             if qa:
-                p = debug_dir / f"iteration_{i}_qa.md"
                 p.write_text(qa, encoding="utf-8")
                 print(f"  ✓ [TEST] iteration_{i}_qa     → {p.relative_to(PROJECT_ROOT)}")
+            else:
+                p.write_text(
+                    "# QA Report (empty)\n\n"
+                    "The QA agent produced no text on this iteration.\n"
+                    "If a fallback report was synthesized, it appears as the "
+                    "final QA report saved alongside the published content.\n",
+                    encoding="utf-8",
+                )
+                print(f"  ⚠ [TEST] iteration_{i}_qa     → empty (sentinel written)")
 
         # Save token usage report
         tracker: TokenTracker | None = state.get("_tracker")
@@ -992,7 +1270,7 @@ def main():
     print(f"SEO Copywriting Agents Pipeline")
     print(f"{'='*60}")
     print(f"  Brand:      {args.brand}")
-    print(f"  Use DNA:    {args.use_dna}")
+    print(f"  Run DNA:    {args.run_dna}")
     print(f"  URL:        {args.url or '(using existing DNA)'}")
     print(f"  Sitemap URL:{args.sitemap_url or '(not regenerating)'}")
     print(f"  Keyword:    {args.keyword}")
@@ -1014,8 +1292,20 @@ def main():
         "QAAgent": GEMINI_MODEL,
     })
 
+    # Resolve version number for logger naming
+    keyword_slug = slugify(args.keyword)
+    version = next_version_number(args.brand, args.page_type, keyword_slug)
+
+    # Initialize agent execution logger for debugging
+    agent_logger = AgentExecutionLogger(
+        brand=args.brand,
+        content_type=args.page_type,
+        keyword=keyword_slug,
+        version=version,
+    )
+
     # Run pipeline (always returns state, even on partial failure)
-    state = asyncio.run(run_pipeline(args, tracker))
+    state = asyncio.run(run_pipeline(args, tracker, agent_logger))
 
     # Save outputs (always, even partial)
     print(f"\n{'='*60}")
