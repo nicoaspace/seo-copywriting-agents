@@ -35,10 +35,10 @@ A multi-agent pipeline that generates SEO-optimized web copy using [Google ADK](
 
 | Phase | Agent | Model | Purpose |
 |-------|-------|-------|---------|
-| 1 | **BrandDNAAgent** | Gemini 2.5 Flash | Scrapes brand website + Google Search to build a Brand DNA document (voice, messaging pillars, vocabulary, audience, CTAs) |
-| 2 | **ResearcherAgent** | Gemini 2.5 Flash | Analyzes top SERP results, extracts entities, identifies content gaps, builds a research brief |
-| 3 | **CopywriterAgent** | Claude Sonnet 4 (via LiteLLM) | Writes SEO-optimized copy using the folder-based `skills/copywriting-redactor/` skill pack (main skill + page-type references) |
-| 4 | **QAAgent** | Claude Sonnet 4 (via LiteLLM) | Scores content across 7 categories (100 pts). Approves (≥80) or sends back with feedback |
+| 1 | **BrandDNAAgent** | Gemini 3 Flash Preview | Scrapes brand website + Google Search to build a Brand DNA document (voice, messaging pillars, vocabulary, audience, CTAs) |
+| 2 | **ResearcherAgent** | Gemini 3 Flash Preview | Analyzes top SERP results, extracts entities, identifies content gaps, builds a research brief |
+| 3 | **CopywriterAgent** | Claude Haiku 4.5 (via LiteLLM) | Writes SEO-optimized copy using the folder-based `skills/copywriting-redactor/` skill pack (main skill + page-type references) |
+| 4 | **QAAgent** | Gemini 3 Flash Preview | Scores content across 8 categories (110 pts). Approves (≥88) or sends back with feedback |
 
 ### Tools
 
@@ -110,7 +110,7 @@ The pipeline checks environment variables first, then falls back to `env/.env.lo
 ```bash
 python main.py \
     --brand <BRAND> \
-    --use-dna <true|false> \
+    --run-dna <true|false> \
     --use-sitemap <true|false> \
     --keyword <PRIMARY_KEYWORD> --topic <TOPIC> \
     --page-type <PAGE_TYPE> --country <COUNTRY> \
@@ -128,8 +128,8 @@ python main.py \
 | Argument | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `--brand` | Yes | — | Brand identifier. Creates/uses `brands/<brand>/` folder |
-| `--use-dna` | Yes | — | `true` = load existing `brand-dna.md`; `false` = generate new (requires `--url`) |
-| `--url` | If `--use-dna false` | — | Brand website URL for DNA generation |
+| `--run-dna` | Yes | — | `true` = generate new Brand DNA (requires `--url`); `false` = load existing `brand-dna.md` |
+| `--url` | If `--run-dna true` | — | Brand website URL for DNA generation |
 | `--use-sitemap` | Yes | — | `true` = load existing `url_inventory.json`; `false` = re-fetch sitemap (requires `--sitemap-url`) |
 | `--sitemap-url` | If `--use-sitemap false` | — | Brand sitemap XML URL. Creates/overwrites `sitemap_config.json` and regenerates `url_inventory.json` |
 | `--keyword` | Yes | — | Primary SEO keyword |
@@ -175,7 +175,7 @@ At runtime, the loader concatenates `SKILL.md` plus all files in `references/`, 
 ### 0. Testing run
 
 ```bash
-python main.py --brand "Siglo BPO" --use-dna true --url https://mexico.siglobpo.com/ --keyword "outsourcing que es" --secondary-keywords "ley de outsourcing​,outsourcing ejemplos,outsourcing que es y como funciona,prorroga reforma outsourcing 2021,ventajas y desventajas del outsourcing,tipos de outsourcing,ventajas del outsourcing,desventajas del outsourcing,outsourcing caracteristicas,outsourcing ejemplos de empresas,offsourcing,outsourcing en mexico"  --topic "Outsourcing en México: ¿Qué es y cómo funciona?"  --page-type blog-post --language es --country méxico --format html
+python main.py --brand "Siglo BPO" --run-dna false --url https://mexico.siglobpo.com/ --keyword "outsourcing que es" --secondary-keywords "ley de outsourcing​,outsourcing ejemplos,outsourcing que es y como funciona,prorroga reforma outsourcing 2021,ventajas y desventajas del outsourcing,tipos de outsourcing,ventajas del outsourcing,desventajas del outsourcing,outsourcing caracteristicas,outsourcing ejemplos de empresas,offsourcing,outsourcing en mexico"  --topic "Outsourcing en México: ¿Qué es y cómo funciona?"  --page-type blog-post --language es --country méxico --format html
 ```
 
 
@@ -184,7 +184,7 @@ python main.py --brand "Siglo BPO" --use-dna true --url https://mexico.siglobpo.
 ```bash
 python main.py \
     --brand "Siglo BPO" \
-    --use-dna false --url https://siglobpo.com \
+    --run-dna true --url https://siglobpo.com \
     --use-sitemap false --sitemap-url https://siglobpo.com/sitemap.xml \
     --keyword "outsourcing que es" \
     --secondary-keywords "ley de outsourcing,outsourcing ejemplos,tipos de outsourcing" \
@@ -206,7 +206,7 @@ This will:
 ```bash
 python main.py \
     --brand "Siglo BPO" \
-    --use-dna true \
+    --run-dna false \
     --use-sitemap true \
     --keyword "asesoría contable" \
     --topic "Asesoría contable para empresas en México" \
@@ -222,7 +222,7 @@ Fastest path: loads existing Brand DNA and URL inventory, skips all fetching.
 ```bash
 python main.py \
     --brand "Siglo BPO" \
-    --use-dna true \
+    --run-dna false \
     --use-sitemap false --sitemap-url https://siglo.com/sitemap.xml \
     --keyword "outsourcing nómina" \
     --topic "Outsourcing de nómina en México" \
@@ -236,7 +236,7 @@ python main.py \
 ```bash
 python main.py \
     --brand "Siglo BPO" \
-    --use-dna true --use-sitemap true \
+    --run-dna false --use-sitemap true \
     --keyword "outsourcing nómina" \
     --topic "Outsourcing de nómina en México" \
     --page-type service-page \
@@ -252,7 +252,7 @@ python main.py \
 ```bash
 python main.py \
     --brand acme \
-    --use-dna false --url https://acme.com \
+    --run-dna true --url https://acme.com \
     --use-sitemap false --sitemap-url https://acme.com/sitemap.xml \
     --keyword "project management software" \
     --secondary-keywords "task management,team collaboration,agile tools" \
@@ -327,8 +327,8 @@ Key constants are defined in `config.py`:
 
 | Constant | Default | Description |
 |----------|---------|-------------|
-| `GEMINI_MODEL` | `gemini-2.5-flash` | Model for Brand DNA + Researcher agents |
-| `CLAUDE_MODEL` | `anthropic/claude-sonnet-4-20250514` | Model for Copywriter + QA agents (via LiteLLM) |
+| `GEMINI_MODEL` | `gemini-3-flash-preview` | Model for Brand DNA + Researcher + QA agents |
+| `CLAUDE_MODEL` | `anthropic/claude-haiku-4-5` | Model for Copywriter agent (via LiteLLM) |
 | `QUALITY_THRESHOLD` | `80` | Minimum QA score to pass |
 | `MAX_QA_ITERATIONS` | `3` | Max write→QA cycles |
 | `PAGE_TIMEOUT_MS` | `30000` | Playwright page load timeout (ms) |
@@ -436,7 +436,7 @@ User Input
 ## Troubleshooting
 
 ### "brand-dna.md not found"
-Run with `--use-dna false --url <brand-url>` first to generate the Brand DNA.
+Run with `--run-dna true --url <brand-url>` first to generate the Brand DNA.
 
 ### "url_inventory.json not found"
 Run with `--use-sitemap false --sitemap-url <sitemap-url>` to generate the URL inventory.

@@ -9,7 +9,7 @@ Quick-reference for all CLI arguments and common command patterns.
 ```bash
 python main.py \
     --brand <BRAND> \
-    --use-dna <true|false> \
+    --run-dna <true|false> \
     --use-sitemap <true|false> \
     --keyword <PRIMARY_KEYWORD> \
     --topic <TOPIC> \
@@ -30,8 +30,8 @@ python main.py \
 | Argument | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `--brand` | Yes | — | Brand identifier. Maps to `brands/<brand>/` folder |
-| `--use-dna` | Yes | — | `true` = load existing `brand-dna.md`; `false` = generate new (requires `--url`) |
-| `--url` | If `--use-dna false` | — | Brand website URL used to generate the Brand DNA |
+| `--run-dna` | Yes | — | `true` = generate new Brand DNA (requires `--url`); `false` = load existing `brand-dna.md` |
+| `--url` | If `--run-dna true` | — | Brand website URL used to generate the Brand DNA |
 | `--use-sitemap` | Yes | — | `true` = load existing `url_inventory.json`; `false` = re-fetch sitemap (requires `--sitemap-url`) |
 | `--sitemap-url` | If `--use-sitemap false` | — | Brand sitemap XML URL. Creates/overwrites `sitemap_config.json` and regenerates `url_inventory.json` |
 | `--keyword` | Yes | — | Primary SEO keyword |
@@ -45,14 +45,14 @@ python main.py \
 
 ---
 
-## `--use-dna` / `--use-sitemap` Decision Matrix
+## `--run-dna` / `--use-sitemap` Decision Matrix
 
 | Scenario | Flags |
 |----------|-------|
-| Very first run for a brand | `--use-dna false --url <URL>` + `--use-sitemap false --sitemap-url <SITEMAP>` |
-| DNA exists, need fresh sitemap | `--use-dna true` + `--use-sitemap false --sitemap-url <SITEMAP>` |
-| DNA exists, sitemap up-to-date | `--use-dna true` + `--use-sitemap true` |
-| New DNA needed, sitemap up-to-date | `--use-dna false --url <URL>` + `--use-sitemap true` |
+| Very first run for a brand | `--run-dna true --url <URL>` + `--use-sitemap false --sitemap-url <SITEMAP>` |
+| DNA exists, need fresh sitemap | `--run-dna false` + `--use-sitemap false --sitemap-url <SITEMAP>` |
+| DNA exists, sitemap up-to-date | `--run-dna false` + `--use-sitemap true` |
+| New DNA needed, sitemap up-to-date | `--run-dna true --url <URL>` + `--use-sitemap true` |
 
 ---
 
@@ -81,7 +81,7 @@ python main.py \
 ```bash
 python main.py \
     --brand "Siglo BPO" \
-    --use-dna false --url https://siglo.com \
+    --run-dna true --url https://siglo.com \
     --use-sitemap false --sitemap-url https://siglo.com/sitemap.xml \
     --keyword "outsourcing que es" \
     --topic "Outsourcing en México: ¿Qué es y cómo funciona?" \
@@ -93,7 +93,7 @@ python main.py \
 ```bash
 python main.py \
     --brand "Siglo BPO" \
-    --use-dna true \
+    --run-dna false \
     --use-sitemap true \
     --keyword "asesoría contable" \
     --topic "Asesoría contable para empresas en México" \
@@ -105,7 +105,7 @@ python main.py \
 ```bash
 python main.py \
     --brand "Siglo BPO" \
-    --use-dna true \
+    --run-dna false \
     --use-sitemap false --sitemap-url https://siglo.com/sitemap.xml \
     --keyword "outsourcing nómina" \
     --topic "Outsourcing de nómina en México" \
@@ -117,7 +117,7 @@ python main.py \
 ```bash
 python main.py \
     --brand "Siglo BPO" \
-    --use-dna true --use-sitemap true \
+    --run-dna false --use-sitemap true \
     --keyword "outsourcing nómina" \
     --topic "Outsourcing de nómina en México" \
     --page-type service-page \
@@ -129,7 +129,7 @@ python main.py \
 ```bash
 python main.py \
     --brand acme \
-    --use-dna false --url https://acme.com \
+    --run-dna true --url https://acme.com \
     --use-sitemap false --sitemap-url https://acme.com/sitemap.xml \
     --keyword "project management software" \
     --secondary-keywords "task management,team collaboration,agile tools" \
