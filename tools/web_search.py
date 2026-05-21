@@ -7,15 +7,18 @@ be combined with other Python function tools without triggering the Gemini
 """
 
 import asyncio
+import json
 from concurrent.futures import ThreadPoolExecutor
 
 from google import genai
 from google.genai import types
 
-from config import BATCH_WEB_SEARCH_SOFT_LIMIT
+from schemas import SearchSource, WebSearchResult
+
+from config import BATCH_WEB_SEARCH_SOFT_LIMIT, GEMINI_MODEL
 
 # Shared thread pool for parallel web searches
-_search_pool = ThreadPoolExecutor(max_workers=8)
+_search_pool = ThreadPoolExecutor(max_workers=16)
 
 # ── Soft-limit counter for batch_web_search calls (M1) ────────────────────────
 # Counts how many times batch_web_search was invoked during the current
@@ -43,29 +46,51 @@ def get_batch_search_stats() -> dict:
     }
 
 
-def _single_search(query: str) -> str:
+def _single_search(query: str) -> dict:
     """Execute a single grounded search (sync, runs in thread pool)."""
     client = genai.Client()
 
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model=GEMINI_MODEL,
         contents=(
             f"Search the web for: {query}\n\n"
-            f"Provide a comprehensive, detailed summary of what you find. Include:\n"
-            f"- Key facts, statistics, and main points from the top results\n"
-            f"- Titles and URLs of the most relevant pages found\n"
-            f"- Any notable quotes or specific data points\n"
-            f"Do NOT truncate or summarize too briefly — be thorough."
+            f"Return a JSON object with these keys:\n"
+            f"- query: the original search query\n"
+            f"- summary: a concise bullet-point summary of the top results\n"
+            f"- sources: a list of {{uri, title}} objects\n\n"
+            f"Response format:\n"
+            f"{{\n"
+            f"  \"query\": \"...\",\n"
+            f"  \"summary\": \"...\",\n"
+            f"  \"sources\": [{{\"uri\": \"...\", \"title\": \"...\"}}]\n"
+            f"}}\n\n"
+            f"LOCALE PRIORITY: Strongly prioritize results written in the same\n"
+            f"language as the query and originating from the country mentioned\n"
+            f"in the query (matching TLD, hreflang, or on-page locale signals).\n"
+            f"Skip results that are clearly in another language or target a\n"
+            f"different country, even if they rank well globally.\n"
+            f"Be brief and information-dense — do not pad."
         ),
         config=types.GenerateContentConfig(
             tools=[types.Tool(google_search=types.GoogleSearch())],
             temperature=0.1,
+            max_output_tokens=1500,
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
+            response_mime_type="application/json",
         ),
     )
 
-    result = response.text or ""
+    raw = response.text or ""
+    parsed: dict = {}
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        parsed = {
+            "query": query,
+            "summary": raw.strip(),
+            "sources": [],
+        }
 
-    # Append grounding sources
     sources = []
     if response.candidates:
         candidate = response.candidates[0]
@@ -80,18 +105,34 @@ def _single_search(query: str) -> str:
                     title = getattr(web, "title", "") or ""
                     if uri and uri not in seen:
                         seen.add(uri)
-                        sources.append(f"- [{title}]({uri})" if title else f"- {uri}")
+                        sources.append({"uri": uri, "title": title})
 
-    if sources:
-        result += "\n\n**Sources found:**\n" + "\n".join(sources)
+    if sources and not parsed.get("sources"):
+        parsed["sources"] = sources
 
-    return result
+    if not parsed.get("query"):
+        parsed["query"] = query
+    if not parsed.get("summary"):
+        parsed["summary"] = raw.strip()
+    if not isinstance(parsed.get("sources"), list):
+        parsed["sources"] = []
+
+    try:
+        result = WebSearchResult(**parsed)
+    except Exception:
+        result = WebSearchResult(
+            query=query,
+            summary=raw.strip(),
+            sources=sources,
+        )
+
+    return result.dict()
 
 
-def web_search(query: str) -> str:
+def web_search(query: str) -> dict:
     """
-    Search the web for information about a given query and return a comprehensive
-    summary of the top results, including key facts, main points, and source URLs.
+    Search the web for information about a given query and return a structured
+    JSON result with a normalized summary and source list.
 
     Use this tool to:
     - Research a brand's background, products, and positioning
@@ -104,12 +145,12 @@ def web_search(query: str) -> str:
         query: The search query (e.g. "outsourcing que es México 2024")
 
     Returns:
-        A text summary of the search results with source URLs.
+        A dict with keys: query, summary, sources.
     """
     return _single_search(query)
 
 
-async def batch_web_search(queries: list[str]) -> dict[str, str]:
+async def batch_web_search(queries: list[str]) -> dict[str, dict]:
     """
     Search the web for MULTIPLE queries simultaneously in parallel.
     This is much faster than calling web_search multiple times sequentially.
@@ -126,7 +167,7 @@ async def batch_web_search(queries: list[str]) -> dict[str, str]:
                  (e.g. ["outsourcing que es México", "outsourcing ventajas México"])
 
     Returns:
-        A dict mapping each query to its search result summary.
+        A dict mapping each query to its structured search result.
     """
     global _batch_call_count, _batch_query_total
     _batch_call_count += 1
@@ -144,10 +185,14 @@ async def batch_web_search(queries: list[str]) -> dict[str, str]:
     tasks = [loop.run_in_executor(_search_pool, _single_search, q) for q in queries]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    output: dict[str, str] = {}
+    output: dict[str, dict] = {}
     for query, result in zip(queries, results):
         if isinstance(result, Exception):
-            output[query] = f"[Search failed: {result}]"
+            output[query] = {
+                "query": query,
+                "summary": f"[Search failed: {result}]",
+                "sources": [],
+            }
         else:
             output[query] = result
     return output

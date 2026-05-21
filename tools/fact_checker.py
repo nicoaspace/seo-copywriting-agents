@@ -4,66 +4,96 @@ Fact Checker Tool — Verifies claims using Gemini with Google Search grounding.
 Wrapped as a Google ADK-compatible tool function.
 """
 
+import json
+
 from google import genai
 from google.genai import types
+
+from schemas import FactCheckResult, FactCheckSource, GroundingSupport
+from config import GEMINI_MODEL
+
+
+def _normalize_fact_check_sources(raw_sources: list) -> list[dict]:
+    normalized: list[dict] = []
+    for item in raw_sources or []:
+        if isinstance(item, dict):
+            normalized.append({
+                "uri": (item.get("uri") or "") if isinstance(item.get("uri"), str) else "",
+                "title": (item.get("title") or "") if isinstance(item.get("title"), str) else "",
+            })
+        elif isinstance(item, str):
+            normalized.append({"uri": item.strip(), "title": ""})
+    return normalized
+
+
+def _parse_legacy_fact_check(raw: str, claim: str) -> dict:
+    verdict = "unverified"
+    evidence = ""
+    if "VERDICT:" in raw:
+        v_line = raw.split("VERDICT:")[1].split("\n")[0].strip().lower()
+        if "verified" in v_line or "true" in v_line:
+            verdict = "verified"
+        elif "false" in v_line:
+            verdict = "false"
+    if "EVIDENCE:" in raw:
+        evidence = raw.split("EVIDENCE:")[1].split("SOURCES:")[0].strip()
+    return {
+        "claim": claim,
+        "verdict": verdict,
+        "evidence": evidence,
+        "sources": [],
+        "grounding_supports": [],
+    }
 
 
 def fact_check_claim(claim: str) -> dict:
     """
     Verify a factual claim by searching the web using Google's grounded search.
     Returns whether the claim is verified, unverified, or false, along with
-    supporting sources. Use this to check statistics, percentages, company facts,
-    or any other verifiable claim found in the draft content.
+    supporting sources.
 
     Args:
         claim: The specific claim to verify (e.g. "Siigo has over 500,000 customers in Colombia")
 
     Returns:
-        dict with keys: "claim", "verdict" (verified|unverified|false),
-        "evidence" (text summary), "sources" (list of {"uri","title"} dicts
-        extracted from Gemini's grounding_metadata — same pattern as the
-        researcher/copywriter web_search tool, so the QA agent can verify
-        that fact-checks come from real pages).
+        dict with keys: claim, verdict, evidence, sources, grounding_supports.
     """
     client = genai.Client()
 
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model=GEMINI_MODEL,
         contents=(
             f"Fact-check the following claim. Determine if it is TRUE, FALSE, or UNVERIFIABLE "
             f"based on available web sources. Provide a brief evidence summary and cite sources.\n\n"
             f"Claim: \"{claim}\"\n\n"
-            f"Respond in this exact format:\n"
-            f"VERDICT: [verified|false|unverified]\n"
-            f"EVIDENCE: [brief summary of what you found]\n"
-            f"SOURCES: [list of source URLs]"
+            f"Respond with a JSON object containing:\n"
+            f"- claim\n"
+            f"- verdict\n"
+            f"- evidence\n"
+            f"- sources: list of {{uri, title}}\n"
+            f"Example output:\n"
+            f"{{\n"
+            f"  \"claim\": \"...\",\n"
+            f"  \"verdict\": \"verified\",\n"
+            f"  \"evidence\": \"...\",\n"
+            f"  \"sources\": [{{\"uri\": \"...\", \"title\": \"...\"}}]\n"
+            f"}}"
         ),
         config=types.GenerateContentConfig(
             tools=[types.Tool(google_search=types.GoogleSearch())],
             temperature=0.1,
+            response_mime_type="application/json",
         ),
     )
 
-    text = response.text if response.text else ""
+    raw = response.text or ""
+    parsed: dict = {}
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        parsed = _parse_legacy_fact_check(raw, claim)
 
-    # Parse verdict
-    verdict = "unverified"
-    if "VERDICT:" in text:
-        v_line = text.split("VERDICT:")[1].split("\n")[0].strip().lower()
-        if "verified" in v_line or "true" in v_line:
-            verdict = "verified"
-        elif "false" in v_line:
-            verdict = "false"
-
-    # Parse evidence
-    evidence = ""
-    if "EVIDENCE:" in text:
-        evidence = text.split("EVIDENCE:")[1].split("SOURCES:")[0].strip()
-
-    # Extract grounding sources from response metadata.
-    # Mirror the structure used by tools/web_search.py so the QA agent gets
-    # the same level of grounding traceability as the researcher/copywriter.
-    sources: list[dict] = []
+    sources = _normalize_fact_check_sources(parsed.get("sources", []))
     grounding_supports: list[dict] = []
     if hasattr(response, "candidates") and response.candidates:
         candidate = response.candidates[0]
@@ -80,9 +110,6 @@ def fact_check_claim(claim: str) -> dict:
                     seen_uris.add(uri)
                     sources.append({"uri": uri, "title": title})
 
-            # grounding_supports maps text segments in the model output to
-            # the chunk indices that grounded them — useful to verify which
-            # part of the EVIDENCE came from which source.
             for support in getattr(gm, "grounding_supports", []) or []:
                 segment = getattr(support, "segment", None)
                 seg_text = getattr(segment, "text", "") if segment else ""
@@ -92,10 +119,15 @@ def fact_check_claim(claim: str) -> dict:
                         {"text": seg_text, "chunk_indices": indices}
                     )
 
-    return {
-        "claim": claim,
-        "verdict": verdict,
-        "evidence": evidence,
-        "sources": sources,
-        "grounding_supports": grounding_supports,
-    }
+    if parsed.get("claim") != claim:
+        parsed["claim"] = claim
+
+    result = FactCheckResult(
+        claim=parsed["claim"],
+        verdict=(parsed.get("verdict") or "unverified").strip().lower(),
+        evidence=(parsed.get("evidence") or "").strip(),
+        sources=sources,
+        grounding_supports=grounding_supports,
+    )
+
+    return result.dict()

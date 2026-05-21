@@ -15,11 +15,14 @@ import httpx
 from google import genai
 from google.genai import types
 
+from schemas import InternalLinkAnalysisResult
+
 from config import (
     AUTHORITY_LINK_CANDIDATES,
     AUTHORITY_VERIFY_CONCURRENCY,
     AUTHORITY_VERIFY_TIMEOUT,
     BRANDS_ROOT,
+    GEMINI_MODEL,
     MAX_AUTHORITY_LINKS,
     MAX_INTERNAL_LINKS,
     URL_INVENTORY_FILENAME,
@@ -165,7 +168,7 @@ JSON OUTPUT SCHEMA
         full_prompt = prompt + ("\n\n" + extra_instruction if extra_instruction else "")
         client = genai.Client()
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model=GEMINI_MODEL,
             contents=full_prompt,
             config=types.GenerateContentConfig(
                 temperature=0.2,
@@ -173,17 +176,25 @@ JSON OUTPUT SCHEMA
             ),
         )
         raw = response.text or ""
+        parsed: dict = {}
         try:
-            return json.loads(raw)
+            parsed = json.loads(raw)
         except json.JSONDecodeError:
             start = raw.find("{")
             end = raw.rfind("}")
             if start >= 0 and end > start:
                 try:
-                    return json.loads(raw[start:end + 1])
+                    parsed = json.loads(raw[start:end + 1])
                 except json.JSONDecodeError:
                     return {"_error": "invalid_json"}
-            return {"_error": "no_json"}
+            else:
+                return {"_error": "no_json"}
+
+        try:
+            validated = InternalLinkAnalysisResult(**parsed)
+            return validated.dict()
+        except Exception:
+            return {"_error": "invalid_json"}
 
     def _split_internals(parsed: dict) -> tuple[list[dict], int]:
         """Return (valid_internals, hallucinated_count) from a parsed response."""

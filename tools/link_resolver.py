@@ -20,6 +20,8 @@ import json
 import re
 from urllib.parse import urlparse
 
+from google.adk.tools.tool_context import ToolContext
+
 
 _URL_RE = re.compile(r"https?://[^\s\"'<>)\]]+", re.IGNORECASE)
 
@@ -116,20 +118,20 @@ def _extract_internal_links_from_brief(research_brief: str) -> list[dict]:
     return out
 
 
-def get_allowed_internal_links(
-    internal_links_mode: str,
-    explicit_links: str,
-    research_brief: str,
-) -> dict:
+def get_allowed_internal_links(tool_context: ToolContext) -> dict:
     """Return the authoritative list of internal links the copywriter is
     allowed to use for the current article.
 
-    Args:
-        internal_links_mode: ``"user"`` or ``"auto"``.
-        explicit_links: The raw ``--internal-links`` CSV string passed by the
-            operator (used only when ``internal_links_mode == "user"``).
-        research_brief: The full research brief text produced by the
-            Researcher (used only when ``internal_links_mode == "auto"``).
+    This tool takes **no LLM-supplied arguments**. All inputs are session-
+    level context already present in ``ToolContext.state``:
+
+      - ``internal_links_mode``: ``"user"`` or ``"auto"`` (set by the CLI).
+      - ``internal_links``: operator's CSV (used only in ``"user"`` mode).
+      - ``research_brief``: Researcher output (used only in ``"auto"`` mode).
+
+    Reading from state — instead of asking the LLM to relay these values —
+    avoids re-injecting the multi-thousand-token research brief on every
+    call and removes a class of "missing required parameter" failures.
 
     Returns:
         dict with:
@@ -140,7 +142,22 @@ def get_allowed_internal_links(
 
     The copywriter MUST NOT use any URL that is not in the returned ``links``.
     """
-    mode = (internal_links_mode or "auto").strip().lower()
+    state = getattr(tool_context, "state", None)
+
+    def _from_state(key: str, default: str = "") -> str:
+        if state is None:
+            return default
+        try:
+            val = state.get(key)
+        except Exception:
+            val = None
+        return val if isinstance(val, str) else default
+
+    internal_links_mode = _from_state("internal_links_mode", "auto") or "auto"
+    explicit_links = _from_state("internal_links")
+    research_brief = _from_state("research_brief")
+
+    mode = internal_links_mode.strip().lower()
     warnings: list[str] = []
 
     if mode == "user":
