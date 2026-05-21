@@ -15,40 +15,16 @@ from google.genai import types
 
 from config import GEMINI_MODEL, QUALITY_THRESHOLD, load_skill
 from tools.fact_checker import fact_check_claim
-from tools.word_counter import count_draft_words
+from tools.word_counter import (
+    count_draft_words,
+    parse_word_count_targets,
+    resolve_word_count_targets,
+)
 
-
-def _parse_word_count_targets(research_brief: str) -> tuple[float | None, int | None]:
-    """Extract 'Average Word Count' and 'Recommended Minimum Word Count' from
-    the research brief markdown. Returns (avg, recommended_min); each may be
-    None if not found."""
-    avg: float | None = None
-    rec_min: int | None = None
-    if not research_brief:
-        return avg, rec_min
-
-    m_avg = re.search(
-        r"Average\s+Word\s+Count[^\d]*([\d.,]+)",
-        research_brief,
-        re.IGNORECASE,
-    )
-    if m_avg:
-        try:
-            avg = float(m_avg.group(1).replace(",", ""))
-        except ValueError:
-            avg = None
-
-    m_rec = re.search(
-        r"Recommended\s+Minimum\s+Word\s+Count[^\d]*~?\s*([\d,]+)",
-        research_brief,
-        re.IGNORECASE,
-    )
-    if m_rec:
-        try:
-            rec_min = int(m_rec.group(1).replace(",", ""))
-        except ValueError:
-            rec_min = None
-    return avg, rec_min
+# Backwards-compat alias — kept for any external import; new code should
+# import `parse_word_count_targets` directly from tools.word_counter. Note
+# that the simplified API returns a single `avg: float | None`, not a tuple.
+_parse_word_count_targets = parse_word_count_targets
 
 
 def exit_loop(tool_context: ToolContext) -> dict:
@@ -84,9 +60,42 @@ def _validate_structure(draft: str, output_format: str) -> dict:
 
     fmt = (output_format or "").lower()
 
+    # Pollution patterns the sanitizer should have already removed. If they
+    # are still present here it means (a) the sanitizer fell back because it
+    # couldn't extract a valid document, or (b) someone bypassed the
+    # callback. Either way these are CRITICAL format failures.
+    pollution_patterns = [
+        (r"##\s*DRAFT\s*[—\-]", "Stray '## DRAFT — …' header in the published document."),
+        (r"###\s*Notes\s+for\s+QA", "Stray '### Notes for QA' section in the published document."),
+        (r"###\s*Copywriting\s+Techniques\s+Applied", "Stray '### Copywriting Techniques Applied' section."),
+        (r"###\s*Voice\s+Applied", "Stray '### Voice Applied' section."),
+        (r"###\s*SEO\s+Metadata", "Stray '### SEO Metadata' summary block — metadata belongs in <meta>/JSON-LD."),
+        (r"^```[a-zA-Z]*\s*$", "Stray Markdown code fence (```) wrapping the document."),
+    ]
+    for pat, msg in pollution_patterns:
+        if re.search(pat, text, re.IGNORECASE | re.MULTILINE):
+            errors.append(msg)
+
     if fmt == "html":
         if not re.match(r"<!doctype\s+html", text, re.IGNORECASE):
             errors.append("Missing <!DOCTYPE html> declaration at top.")
+        # Detect ANY non-whitespace text appearing before <!DOCTYPE html>.
+        m_doctype = re.search(r"<!doctype\s+html", text, re.IGNORECASE)
+        if m_doctype and m_doctype.start() > 0:
+            preamble = text[: m_doctype.start()].strip()
+            if preamble:
+                errors.append(
+                    "Preamble text precedes <!DOCTYPE html> "
+                    f"({len(preamble)} chars before document start)."
+                )
+        # Detect trailing content after </html>.
+        m_close = re.search(r"</html\s*>", text, re.IGNORECASE)
+        if m_close and m_close.end() < len(text):
+            trailing = text[m_close.end():].strip()
+            if trailing:
+                errors.append(
+                    f"Content found after </html> ({len(trailing)} chars trailing)."
+                )
         try:
             from bs4 import BeautifulSoup  # local import — optional dep
         except ImportError:
@@ -159,15 +168,16 @@ def _before_qa_callback(callback_context: CallbackContext) -> None:
     state["structural_validation"] = result["summary"]
 
     # Word-count pre-flight: deterministic numeric check against the research
-    # brief's SERP average + recommended minimum. The QA prompt references
+    # brief's SERP average + the page-type hard cap. The QA prompt references
     # this as {word_count_validation} so the LLM cannot skip it.
     research_brief = state.get("research_brief", "") or ""
-    avg, rec_min = _parse_word_count_targets(research_brief)
+    page_type = state.get("page_type", "blog-post") or "blog-post"
+    targets = resolve_word_count_targets(page_type, research_brief)
     wc = count_draft_words(
         draft=draft,
         output_format=fmt,
-        avg_word_count=avg,
-        recommended_min=rec_min,
+        avg_word_count=targets["avg_word_count"],
+        hard_cap=targets["hard_cap"],
     )
     state["word_count_metrics"] = wc
     state["word_count_validation"] = (
@@ -188,6 +198,56 @@ def _after_qa_callback(callback_context: CallbackContext) -> None:
     state value so the event is emitted with the escalate flag attached.
     """
     qa_text = callback_context.state.get("qa_feedback", "") or ""
+
+    # Empty-feedback fallback: if the QA model emitted no text (e.g. an empty
+    # final turn after a tool call), synthesize a deterministic report from
+    # the structural + word-count pre-check so the iteration still produces
+    # actionable feedback for the next loop turn — and so the on-disk
+    # iteration_N_qa.md file is never silently missing.
+    if not qa_text.strip():
+        wc = callback_context.state.get("word_count_metrics") or {}
+        struct = callback_context.state.get("structural_validation", "") or ""
+        wc_status = wc.get("status", "unknown")
+        wc_n = wc.get("word_count", "?")
+        wc_cap = wc.get("hard_cap")
+        wc_avg = wc.get("avg_word_count")
+
+        # Word-count blocker takes precedence; otherwise structural; otherwise
+        # generic "model emitted no text".
+        critical_lines: list[str] = []
+        if wc_status == "above_hard_cap":
+            cap_txt = f"hard cap {wc_cap}" if wc_cap else "configured limit"
+            critical_lines.append(
+                f"[SEO-CRITICAL] Word count {wc_n} exceeds {cap_txt} "
+                f"(SERP avg {wc_avg}). "
+                f"You MUST cut the draft below the hard cap. Remove redundant "
+                f"paragraphs and merge overlapping sections — do NOT add new "
+                f"content."
+            )
+        if struct.startswith("STRUCTURAL: FAIL"):
+            critical_lines.append(f"[STRUCTURE-CRITICAL] {struct}")
+        if not critical_lines:
+            critical_lines.append(
+                "[QA-CRITICAL] QA model returned no text. Review the draft "
+                "manually or rerun the iteration."
+            )
+
+        qa_text = (
+            "# QA Report (Fallback — synthesized from deterministic pre-checks)\n\n"
+            "## Score: 0/100\n"
+            "## Verdict: REVISION NEEDED\n\n"
+            f"### Structural pre-check\n```\n{struct}\n```\n\n"
+            f"### Word-count pre-check\n"
+            f"- word_count: {wc_n}\n"
+            f"- status: {wc_status}\n"
+            f"- avg_word_count: {wc_avg}\n"
+            f"- hard_cap: {wc_cap}\n\n"
+            "### Critical Issues\n"
+            + "\n".join(f"- {line}" for line in critical_lines)
+            + "\n"
+        )
+        callback_context.state["qa_feedback"] = qa_text
+        callback_context.state["qa_fallback_used"] = True
 
     # Robust score parsing (C2). Strategy, in priority order:
     #   1. Final/Overall/Total Score: NN/100   — the canonical headline.
@@ -235,9 +295,100 @@ def _after_qa_callback(callback_context: CallbackContext) -> None:
         re.search(r"[Vv]erdict[\s:*]+APPROVED\b", qa_text)
     )
 
+    # ── Deterministic critical-issue enforcement ─────────────────────────
+    # Even if the LLM scored the draft 97/100, we override with a hard cap
+    # whenever a publication blocker is present. This is the safety net for
+    # the "high score despite obvious errors" failure mode.
+    state = callback_context.state
+    wc_metrics = state.get("word_count_metrics") or {}
+    struct_summary = state.get("structural_validation", "") or ""
+    forced_cap: int | None = None
+    forced_reasons: list[str] = []
+
+    if struct_summary.startswith("STRUCTURAL: FAIL"):
+        forced_cap = min(forced_cap or 30, 30)
+        forced_reasons.append("structural pre-check FAIL → cap 30")
+
+    wc_status = wc_metrics.get("status", "")
+    if wc_status == "above_hard_cap":
+        forced_cap = min(forced_cap or 40, 40)
+        forced_reasons.append("word-count above_hard_cap → cap 40")
+
+    # Count CRITICAL / WARNING markers the QA model itself logged. We use a
+    # broad regex so any [*-CRITICAL] / [*-WARNING] tag is captured.
+    critical_count = len(
+        re.findall(r"\[[A-Z][A-Z0-9_-]*-CRITICAL\]", qa_text)
+    )
+    warning_count = len(
+        re.findall(r"\[[A-Z][A-Z0-9_-]*-WARNING\]", qa_text)
+    )
+
+    # Apply per-CRITICAL flat penalty on top of whatever the LLM scored, but
+    # only when the LLM's reported score is implausibly high relative to the
+    # number of criticals it itself flagged. This catches the failure mode
+    # where the model lists CRITICAL issues then "forgets" to deduct.
+    if score is not None and critical_count > 0:
+        penalized = max(0, score - 10 * critical_count - 3 * warning_count)
+        if penalized < score:
+            forced_reasons.append(
+                f"flat penalty: -10×{critical_count} crit "
+                f"-3×{warning_count} warn → {score}→{penalized}"
+            )
+            score = penalized
+
+    if forced_cap is not None and score is not None and score > forced_cap:
+        forced_reasons.append(f"score {score} clamped to {forced_cap}")
+        score = forced_cap
+
+    # ANY of: score < threshold OR forced cap triggered OR ≥1 critical →
+    # block approval.
+    block_approval = (
+        forced_cap is not None
+        or critical_count > 0
+        or (score is not None and score < QUALITY_THRESHOLD)
+    )
+
+    if forced_reasons:
+        # Persist the deterministic adjustments and surface them in feedback
+        # so the copywriter sees exactly why approval was blocked.
+        adj_block = (
+            "\n\n---\n\n"
+            "### ⚙️ Deterministic QA Adjustments (auto-applied)\n"
+            f"- Critical issues counted: {critical_count}\n"
+            f"- Warnings counted: {warning_count}\n"
+            f"- Adjustments: {'; '.join(forced_reasons)}\n"
+            f"- **Final adjusted score: {score if score is not None else 'unparsed'}/100**\n"
+            f"- **Final adjusted verdict: REVISION NEEDED**\n"
+        )
+        if "Deterministic QA Adjustments" not in qa_text:
+            qa_text = qa_text.rstrip() + adj_block
+            state["qa_feedback"] = qa_text
+        state["qa_forced_adjustments"] = forced_reasons
+        state["qa_forced_cap"] = forced_cap
+        # Ensure the report's headline score/verdict reflect the override so
+        # downstream save logic does not surface a stale 97/100.
+        qa_text = re.sub(
+            r"^(\s*##?\s*Score[\s:*]+)\d{1,3}(\s*/\s*100)",
+            lambda mm: mm.group(1) + str(score) + mm.group(2),
+            qa_text,
+            count=1,
+            flags=re.MULTILINE,
+        )
+        qa_text = re.sub(
+            r"^(\s*##?\s*Verdict[\s:*]+)APPROVED\b",
+            lambda mm: mm.group(1) + "REVISION NEEDED",
+            qa_text,
+            count=1,
+            flags=re.MULTILINE | re.IGNORECASE,
+        )
+        state["qa_feedback"] = qa_text
+
     should_exit = (
-        (score is not None and score >= QUALITY_THRESHOLD)
-        or verdict_approved
+        not block_approval
+        and (
+            (score is not None and score >= QUALITY_THRESHOLD)
+            or verdict_approved
+        )
     )
 
     # Persist parse results for auditability and — crucially — to force ADK

@@ -142,28 +142,23 @@ The deterministic `count_draft_words` pre-check has already produced the
 authoritative word count and a `status`. Use it directly — do NOT recount
 by eye. If you need to re-verify mid-review (e.g., after the copywriter
 revises in a later iteration), call the `count_draft_words` tool with the
-draft, format, and the research brief's "Average Word Count" /
-"Recommended Minimum Word Count" values.
+draft, format, the SERP "Average Word Count" from the research brief, and
+the page-type `hard_cap` from the metrics block.
 
 The pre-check status maps to scoring as follows:
 
 | `status` from pre-check | Score | Issue to log |
 |-------------------------|-------|--------------|
-| `within_target` | 8 pts | — |
-| `below_avg` | 5 pts | `[SEO-WARNING] Word count <N> is below the SERP average (<avg>). Content may lack competitive depth.` |
-| `above_target` | 5 pts | `[SEO-WARNING] Word count <N> exceeds SERP average <avg> but is within the critical threshold. Trim filler/redundancy.` |
-| `above_critical` | 0 pts | `[SEO-CRITICAL] Word count <N> is +<delta_vs_avg_pct>% over the SERP average (<avg>), exceeding the configured critical threshold. Content is bloated — must be cut by at least <cut_target> words.` |
-| `above_hard_cap` | 0 pts | `[SEO-CRITICAL] Word count <N> exceeds hard cap <hard_cap> (SERP avg <avg>, recommended min <rec_min>). Content is bloated by ~<delta_vs_avg_pct>% over average — must be cut.` |
-| `below_min` | 0 pts | `[SEO-WARNING] Word count <N> is more than 10% below the recommended minimum <rec_min>. Content is too thin to compete.` |
-| `no_targets` | Use the page-type defaults from the table above and score accordingly. | — |
+| `ok` | 8 pts | — |
+| `above_hard_cap` | 0 pts | `[SEO-CRITICAL] Word count <N> exceeds hard cap <hard_cap> (SERP avg <avg>). Draft is bloated by <delta_vs_avg_pct>% over the average — must be cut.` |
+| `no_targets` | Use the page-type default hard cap from the table above and score accordingly. | — |
 
 When you log the issue, ALWAYS quote the exact numbers from the pre-check
-(`word_count`, `avg_word_count`, `recommended_min`, `delta_vs_avg`,
-`delta_vs_avg_pct`, `hard_cap`) so the copywriter knows the precise gap to
-close. For drafts in `above_target` or `above_hard_cap` status, the
-revision feedback MUST include a concrete word-cut target (e.g.,
-"trim ~{word_count − ideal_max} words by removing redundant paragraphs in
-sections X, Y").
+(`word_count`, `avg_word_count`, `delta_vs_avg`, `delta_vs_avg_pct`,
+`hard_cap`) so the copywriter knows the precise gap to close. For drafts
+in `above_hard_cap` status, the revision feedback MUST include a concrete
+word-cut target (e.g., "trim ~{word_count − hard_cap} words by removing
+redundant paragraphs in sections X, Y").
 
 **Internal Links (1 point):**
 
@@ -402,13 +397,35 @@ Information Gain:        __/5
 TOTAL:                 __/100
 ```
 
-**CRITICAL ISSUES RULE (no global cap):** Do NOT artificially cap the total score. Each CRITICAL issue is already reflected via its category-level deduction. The total score is the honest sum of category scores.
+**CRITICAL ISSUES RULE — MANDATORY PENALTY SYSTEM (overrides any "no global cap" intuition):**
 
-However, CRITICAL issues are publication blockers in two specific cases:
-1. **STRUCTURAL FAIL** (from the structural pre-check): cap total at 50/100.
-2. **2 or more unresolved CRITICAL ethics claims** in Category 2: force `Verdict: REVISION NEEDED` regardless of total score.
+CRITICAL issues are publication blockers. They MUST drag the total score down regardless of how well other categories scored. Apply these rules in order:
 
-In all other cases, let the deductions speak for themselves: a draft with one CRITICAL issue but otherwise excellent execution can legitimately score ≥ 85 and be approved.
+1. **Hard score caps** (apply the LOWEST cap that triggers):
+   - `STRUCTURAL: FAIL` from the deterministic pre-check → **cap total at 30/100**.
+   - Word-count `status = above_hard_cap` → **cap total at 40/100**.
+   - Any `[FORMAT-CRITICAL]`, `[STRUCTURE-CRITICAL]`, or pollution pattern in the draft (e.g. `## DRAFT — …`, `### Notes for QA`, stray triple-backtick fences, content before `<!DOCTYPE html>`, content after `</html>`) → **cap total at 30/100**.
+   - Missing `<!DOCTYPE html>` (HTML format) or missing YAML frontmatter (Markdown format) → **cap total at 30/100**.
+
+2. **Per-CRITICAL flat penalty** (applied AFTER category scoring, BEFORE caps):
+   - **−10 points off the total score for each unresolved CRITICAL issue** of any category (`[BRAND-CRITICAL]`, `[ETHICS-CRITICAL]`, `[SEO-CRITICAL]`, `[CONTENT-CRITICAL]`, `[FACTS-CRITICAL]`, etc.).
+   - **−3 points off the total score for each unresolved WARNING.**
+   - NOTE issues do not deduct from the total; they are advisory only.
+   - Total score is `max(0, sum(category_scores) − 10 × critical_count − 3 × warning_count)`, then clamped by the lowest applicable cap from rule 1.
+
+3. **Forced REVISION verdict** (independent of total score):
+   - 1 or more CRITICAL issues → `Verdict: REVISION NEEDED` regardless of total score.
+   - 2 or more unresolved CRITICAL ethics claims → `Verdict: REVISION NEEDED` (already enforced in Category 2).
+   - Any hard cap from rule 1 was triggered → `Verdict: REVISION NEEDED`.
+
+4. **APPROVAL requires ALL of:**
+   - Total score ≥ 85/100 (after deductions and caps).
+   - **Zero CRITICAL issues** across all categories.
+   - Structural pre-check `PASS`.
+   - Word-count `status` = `ok` (or `no_targets` when no hard cap is configured).
+
+**Worked example (the 97.5 case):**
+A draft with `[FORMAT-CRITICAL] preamble before <!DOCTYPE html>` and `[SEO-CRITICAL] word count over hard cap` cannot score above 30/100. Even if Brand=15, Ethics=12, Content=20, Facts=10, Lang=8, Gain=5 (sum=70 + partial SEO), the format-critical cap and word-count cap both trigger → final score = min(30, 40) = **30/100, Verdict: REVISION NEEDED**. The reviewer should NEVER hand an APPROVED verdict to a draft with stray writer-notes, missing DOCTYPE, or word count over hard cap.
 
 **SCORE BOUNDS RULE:** Never assign a score higher than the maximum for any category. Double-check each category score against its max before calculating the total.
 

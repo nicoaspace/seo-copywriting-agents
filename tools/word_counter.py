@@ -1,36 +1,79 @@
 """
 Word Counter Tool — Deterministic word/character count for QA.
 
-The QA agent calls this tool to obtain the EXACT word count of the
-copywriter's draft (HTML tags, scripts, styles and YAML frontmatter
-stripped) and contrast it against the SERP "Average Word Count" and
-"Recommended Minimum Word Count" coming from the research brief.
+Simplified model (April 2026):
 
-This replaces the "by-eye" word count check the LLM was doing in
-Category 3 → Word Count Compliance, giving the score a reliable
-numeric foundation.
+* The Researcher Agent provides the **SERP "Average Word Count"** in the
+  research brief. That number is the copywriter's *target average* — there
+  is no longer an `ideal_min` / `ideal_max` band.
+* `config.PAGE_TYPE_WORD_LIMITS` provides a single per-page-type
+  **`hard_max`** value. Exceeding it is the only word-count CRITICAL the
+  QA agent flags.
+
+Everything else (below the average, slightly above the average, etc.) is
+informational only — no warning, no penalty.
 """
 
 from __future__ import annotations
 
 import re
 
-from config import WORD_COUNT_CRITICAL_OVERAGE_PCT
+from config import PAGE_TYPE_WORD_LIMITS
+
+
+def parse_word_count_targets(research_brief: str) -> float | None:
+    """Extract the SERP 'Average Word Count' from the research brief markdown.
+
+    Returns the average as a float, or None if it cannot be parsed. The
+    'Recommended Minimum Word Count' field is intentionally ignored — the
+    simplified model uses only the average + the per-page-type hard cap.
+    """
+    if not research_brief:
+        return None
+    m = re.search(
+        r"Average\s+Word\s+Count[^\d]*([\d.,]+)",
+        research_brief,
+        re.IGNORECASE,
+    )
+    if not m:
+        return None
+    try:
+        return float(m.group(1).replace(",", ""))
+    except ValueError:
+        return None
+
+
+def resolve_word_count_targets(
+    page_type: str,
+    research_brief: str = "",
+) -> dict:
+    """Resolve the (avg_word_count, hard_cap) pair the copywriter must target.
+
+    * `avg_word_count` comes from the research brief (None if absent).
+    * `hard_cap` is `PAGE_TYPE_WORD_LIMITS[page_type]` — a fixed per-page-type
+      ceiling. The QA agent flags CRITICAL only when this value is exceeded.
+
+    Returns a dict so callers can log the inputs alongside the resolved
+    values.
+    """
+    hard_cap = PAGE_TYPE_WORD_LIMITS.get(page_type, 2_700)
+    avg = parse_word_count_targets(research_brief)
+    return {
+        "avg_word_count": avg,
+        "hard_cap": int(hard_cap),
+        "default_hard": int(hard_cap),
+    }
 
 
 def _strip_html(html: str) -> str:
     """Remove <script>/<style> blocks, all tags, HTML comments and meta
     boilerplate so only the human-visible body text remains.
-
-    Falls back to a regex-based stripper if BeautifulSoup is not installed.
     """
     if not html:
         return ""
-
     try:
         from bs4 import BeautifulSoup
     except ImportError:
-        # Regex fallback — coarse but safe enough for word counting.
         text = re.sub(r"<!--.*?-->", " ", html, flags=re.DOTALL)
         text = re.sub(
             r"<(script|style|noscript|head)\b[^>]*>.*?</\1>",
@@ -42,10 +85,8 @@ def _strip_html(html: str) -> str:
         return text
 
     soup = BeautifulSoup(html, "html.parser")
-    # Drop non-content elements outright.
     for tag in soup(["script", "style", "noscript", "head"]):
         tag.decompose()
-    # If there's a <body>, count only its text; otherwise use the whole doc.
     body = soup.body or soup
     return body.get_text(separator=" ")
 
@@ -65,22 +106,22 @@ def count_draft_words(
     draft: str,
     output_format: str = "html",
     avg_word_count: float | None = None,
-    recommended_min: int | None = None,
+    hard_cap: int | None = None,
 ) -> dict:
     """
     Count the EXACT number of words and characters in the copywriter's draft,
-    excluding HTML markup / YAML frontmatter, and compare the count to the
-    research brief's targets so the QA agent can score word-count compliance
-    deterministically.
+    excluding HTML markup / YAML frontmatter, and compare the count against
+    the SERP average + page-type hard cap.
 
     Args:
         draft: Raw draft as produced by the copywriter (HTML or Markdown).
-        output_format: "html" or "text"/"markdown". Anything other than
-            "html" is treated as Markdown.
-        avg_word_count: SERP "Average Word Count" from the research brief
-            (e.g. 1545.67). Optional.
-        recommended_min: "Recommended Minimum Word Count" from the research
-            brief (e.g. 1800). Optional.
+        output_format: "html" or anything else (treated as Markdown).
+        avg_word_count: SERP "Average Word Count" from the research brief.
+            Optional. Used only to compute `delta_vs_avg` for reporting —
+            never affects the status.
+        hard_cap: Hard maximum word count. Exceeding it is the only
+            CRITICAL the QA agent flags. Optional; if omitted, status will
+            be "no_targets".
 
     Returns:
         dict with keys:
@@ -89,39 +130,28 @@ def count_draft_words(
             - char_count_with_spaces (int)
             - paragraph_count (int): rough count of non-empty paragraphs
             - avg_word_count (float|None): echoed from input
-            - recommended_min (int|None): echoed from input
+            - hard_cap (int|None): echoed from input
             - delta_vs_avg (int|None): word_count − avg_word_count
             - delta_vs_avg_pct (float|None): (delta / avg) × 100
-            - delta_vs_recommended (int|None): word_count − recommended_min
-            - hard_cap (int|None): max(default_hard_cap_hint, recommended_min × 1.2)
-            - status (str): "below_min" | "below_avg" | "within_target" |
-                            "above_target" | "above_hard_cap" | "no_targets"
-            - verdict (str): one-line human-readable summary the QA agent
-                             can quote directly in its report.
+            - status (str): "above_hard_cap" | "ok" | "no_targets"
+            - verdict (str): one-line human-readable summary.
     """
     fmt = (output_format or "").lower()
     if fmt == "html":
         text = _strip_html(draft or "")
     else:
         text = _strip_markdown_frontmatter(draft or "")
-        # Also strip any stray HTML that snuck into a Markdown draft.
         text = re.sub(r"<[^>]+>", " ", text)
 
-    # Normalize whitespace.
     normalized = re.sub(r"\s+", " ", text).strip()
-
     words = _WORD_RE.findall(normalized)
     word_count = len(words)
     char_count_with_spaces = len(normalized)
     char_count = len(normalized.replace(" ", ""))
     paragraph_count = sum(1 for p in re.split(r"\n\s*\n", text) if p.strip())
 
-    # Build the comparison block.
     delta_vs_avg: int | None = None
     delta_vs_avg_pct: float | None = None
-    delta_vs_recommended: int | None = None
-    hard_cap: int | None = None
-    status = "no_targets"
     verdict_parts: list[str] = [f"Draft has {word_count} words ({char_count} chars)."]
 
     if avg_word_count is not None and avg_word_count > 0:
@@ -132,87 +162,20 @@ def count_draft_words(
             f"delta {delta_vs_avg:+d} words ({delta_vs_avg_pct:+.1f}%)."
         )
 
-    if recommended_min is not None and recommended_min > 0:
-        delta_vs_recommended = word_count - recommended_min
-        # Hard cap: 20% above the recommended minimum (matches qa_skill rule).
-        hard_cap = int(round(recommended_min * 1.2))
-        ideal_max = int(round(recommended_min * 1.15))
-        verdict_parts.append(
-            f"Recommended min: {recommended_min} (ideal ≤ {ideal_max}, "
-            f"hard cap {hard_cap})."
-        )
-
-        if word_count < recommended_min * 0.9:
-            status = "below_min"
-            verdict_parts.append(
-                "STATUS: BELOW minimum by more than 10% — content too thin."
-            )
-        elif word_count > hard_cap:
+    if hard_cap is not None and hard_cap > 0:
+        verdict_parts.append(f"Hard cap: {hard_cap}.")
+        if word_count > hard_cap:
             status = "above_hard_cap"
             verdict_parts.append(
-                f"STATUS: ABOVE hard cap by {word_count - hard_cap} words — "
-                f"content is bloated, must be cut."
-            )
-        elif word_count > ideal_max:
-            # Check whether we are also over the SERP-average critical threshold.
-            over_avg_pct = (
-                (word_count - avg_word_count) / avg_word_count * 100
-                if avg_word_count and avg_word_count > 0
-                else 0.0
-            )
-            if over_avg_pct > WORD_COUNT_CRITICAL_OVERAGE_PCT:
-                status = "above_critical"
-                verdict_parts.append(
-                    f"STATUS: CRITICAL — word count {word_count} is "
-                    f"+{over_avg_pct:.1f}% over the SERP average "
-                    f"({avg_word_count:.0f}) which exceeds the "
-                    f"{WORD_COUNT_CRITICAL_OVERAGE_PCT:.0f}% critical threshold. "
-                    f"Content must be cut by at least "
-                    f"{int(word_count - avg_word_count * (1 + WORD_COUNT_CRITICAL_OVERAGE_PCT / 100))} words."
-                )
-            else:
-                status = "above_target"
-                verdict_parts.append(
-                    f"STATUS: ABOVE ideal range by {word_count - ideal_max} words — "
-                    f"trim recommended."
-                )
-        elif (
-            avg_word_count is not None
-            and avg_word_count > 0
-            and word_count < avg_word_count * 0.9
-        ):
-            status = "below_avg"
-            verdict_parts.append(
-                "STATUS: below SERP average — competitive depth at risk."
+                f"STATUS: CRITICAL — over hard cap by "
+                f"{word_count - hard_cap} words. Must be cut."
             )
         else:
-            status = "within_target"
-            verdict_parts.append("STATUS: within target range.")
-    elif avg_word_count is not None and avg_word_count > 0:
-        # Only the SERP average is known — use WORD_COUNT_CRITICAL_OVERAGE_PCT
-        # as the critical threshold and ±15% as the warning soft band.
-        over_avg_pct = (word_count - avg_word_count) / avg_word_count * 100
-        if over_avg_pct > WORD_COUNT_CRITICAL_OVERAGE_PCT:
-            status = "above_critical"
-            verdict_parts.append(
-                f"STATUS: CRITICAL — word count {word_count} is "
-                f"+{over_avg_pct:.1f}% over the SERP average "
-                f"({avg_word_count:.0f}), exceeding the "
-                f"{WORD_COUNT_CRITICAL_OVERAGE_PCT:.0f}% critical threshold."
-            )
-        elif word_count > avg_word_count * 1.0:  # any positive delta is a soft warning
-            status = "above_target"
-            verdict_parts.append(
-                "STATUS: above SERP average — minor bloat, trim if possible."
-            )
-        elif word_count < avg_word_count * 0.85:
-            status = "below_avg"
-            verdict_parts.append(
-                "STATUS: more than 15% below SERP average — content may be thin."
-            )
-        else:
-            status = "within_target"
-            verdict_parts.append("STATUS: within ±15% of SERP average.")
+            status = "ok"
+            verdict_parts.append("STATUS: within hard cap.")
+    else:
+        status = "no_targets"
+        verdict_parts.append("STATUS: no hard cap provided.")
 
     return {
         "word_count": word_count,
@@ -220,13 +183,11 @@ def count_draft_words(
         "char_count_with_spaces": char_count_with_spaces,
         "paragraph_count": paragraph_count,
         "avg_word_count": avg_word_count,
-        "recommended_min": recommended_min,
+        "hard_cap": hard_cap,
         "delta_vs_avg": delta_vs_avg,
         "delta_vs_avg_pct": (
             round(delta_vs_avg_pct, 1) if delta_vs_avg_pct is not None else None
         ),
-        "delta_vs_recommended": delta_vs_recommended,
-        "hard_cap": hard_cap,
         "status": status,
         "verdict": " ".join(verdict_parts),
     }
