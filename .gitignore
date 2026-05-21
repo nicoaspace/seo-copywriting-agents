@@ -31,3 +31,4 @@ brands/*
 
 # Logs
 .streamlit_runs/
+.tmp/
