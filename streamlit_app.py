@@ -37,9 +37,23 @@ from config import (
     PROJECT_ROOT,
     brand_path,
     check_api_keys,
+    load_brightdata_key,
     setup_env_keys,
 )
 from token_tracker import TokenTracker
+
+
+def _ensure_playwright_browsers() -> None:
+    """Ensure Playwright Chromium browser binaries are installed dynamically."""
+    try:
+        import subprocess
+        print("Checking/installing Playwright Chromium...")
+        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
+        print("Playwright Chromium check/installation complete.")
+    except Exception as e:
+        print(f"Playwright installation failed or skipped: {e}")
+
+_ensure_playwright_browsers()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -186,6 +200,7 @@ def _build_args_namespace(form: dict) -> argparse.Namespace:
         internal_links=(form.get("internal_links") or "").strip(),
         use_sitemap="true" if form["use_sitemap"] else "false",
         funnel_stage=form.get("funnel_stage") or "auto",
+        brightdata_option="true" if form.get("brightdata_option") else "false",
     )
 
     # Apply the same input sanitization the CLI does, then dedupe internal links.
@@ -255,6 +270,14 @@ def _validate(form: dict) -> list[str]:
         if bad:
             errors.append(f"Internal links inválidos: {', '.join(bad)}")
 
+    if form.get("brightdata_option"):
+        setup_env_keys(validate=False)
+        if not load_brightdata_key():
+            errors.append(
+                "**Bright Data** está activado pero falta `BRIGHTDATA_API_KEY` "
+                "en `env/.env.local` o en el entorno."
+            )
+
     return errors
 
 
@@ -274,6 +297,7 @@ def _build_cli_command(args: argparse.Namespace) -> list[str]:
         "--country", args.country,
         "--format", args.output_format,
         "--funnel-stage", args.funnel_stage,
+        "--brightdata-option", args.brightdata_option,
     ]
 
     if args.url:
@@ -644,6 +668,23 @@ with top_right:
 st.divider()
 
 st.subheader("Contenido")
+
+brightdata_option = st.checkbox(
+    "Bright Data SERP (researcher)",
+    value=False,
+    disabled=is_running,
+    help=(
+        "Si está marcado, el Researcher usa la API de Bright Data para búsquedas en Google "
+        "(como advanced-langflow-web-agent). Tiene prioridad sobre Gemini grounding. "
+        "Requiere BRIGHTDATA_API_KEY y opcionalmente BRIGHTDATA_ZONE (default: ai_agent2)."
+    ),
+)
+
+if brightdata_option:
+    st.caption("🔍 Researcher: **Bright Data** — sin grounding metadata de Gemini")
+else:
+    st.caption("🔍 Researcher: **Gemini grounding** (por defecto)")
+
 content_left, content_right = st.columns(2)
 
 with content_left:
@@ -787,6 +828,7 @@ if submitted:
         "output_format": output_format,
         "internal_links": internal_links,
         "funnel_stage": funnel_stage,
+        "brightdata_option": brightdata_option,
     }
 
     errors = _validate(form)

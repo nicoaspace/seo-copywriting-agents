@@ -105,6 +105,36 @@ The pipeline checks environment variables first, then falls back to `env/.env.lo
 
 ---
 
+## Deployment to Streamlit Community Cloud
+
+This project is configured to be deployed directly to [Streamlit Community Cloud](https://streamlit.io/cloud).
+
+### Configuration Files Added
+1. `requirements.txt`: Python package dependencies needed for running the application in a cloud environment.
+2. `packages.txt`: Debian system libraries required by Chromium/Playwright in the headless cloud environment.
+3. **Automatic Playwright Setup**: `streamlit_app.py` automatically checks and installs the Playwright Chromium browser binaries at startup on deployment.
+
+### Steps to Deploy
+1. **Push Changes to GitHub:** Make sure all your local files (including `requirements.txt`, `packages.txt`, and the updated `streamlit_app.py`) are committed and pushed to your GitHub repository.
+2. **Access Streamlit Cloud:** Go to [Streamlit Community Cloud](https://streamlit.io/cloud) and sign in using your GitHub account.
+3. **Deploy a New App:**
+   - Click **New app** (or **Deploy an app**).
+   - Choose your repository (`seo-copywriting-agents`), select the target branch (e.g. `master` or `main`), and set the main file path to `streamlit_app.py`.
+4. **Configure API Keys (Secrets):**
+   - Click **Advanced Settings** before deploying (or go to App Settings > Secrets afterwards).
+   - In the Secrets TOML text area, define your API keys:
+     ```toml
+     GOOGLE_API_KEY = "your-google-api-key-here"
+     ANTHROPIC_API_KEY = "your-anthropic-api-key-here"
+     
+     # Optional: if you plan to use Bright Data SERP
+     BRIGHTDATA_API_KEY = "your-brightdata-key-here"
+     ```
+   - Click **Save**.
+5. **Launch:** Click **Deploy!** Streamlit Cloud will boot up the container, install system dependencies from `packages.txt`, install Python dependencies from `requirements.txt`, run `playwright install chromium` automatically on start, and open your live app.
+
+---
+
 ## Usage
 
 ```bash
