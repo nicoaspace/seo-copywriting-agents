@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+    
+    body {
+      margin: 0;
+      padding: 0;
+      background: transparent;
+      font-family: 'Inter', sans-serif;
+      overflow: hidden;
+    }
+    
+    #pipeline-flow {
+      background: #0d1117;
+      border: 1px solid #21262d;
+      border-radius: 16px;
+      padding: 24px 16px;
+      box-sizing: border-box;
+    }
+    
+    .pf-track {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0;
+      flex-wrap: nowrap;
+      min-width: 800px;
+    }
+    
+    .pf-node {
+      position: relative;
+      background: #161b22;
+      border: 1.5px solid #30363d;
+      border-radius: 14px;
+      padding: 18px 14px 14px;
+      width: 148px;
+      min-width: 148px;
+      cursor: pointer;
+      transition: border-color 0.25s, box-shadow 0.25s, transform 0.2s;
+      text-align: center;
+      box-sizing: border-box;
+    }
+    
+    .pf-node:hover {
+      border-color: var(--ac);
+      box-shadow: 0 0 20px var(--ac-glow);
+      transform: translateY(-3px);
+      z-index: 10;
+    }
+    
+    .pf-node.open {
+      border-color: var(--ac);
+      box-shadow: 0 0 28px var(--ac-glow);
+    }
+    
+    .pf-icon { font-size: 2rem; margin-bottom: 8px; }
+    .pf-label { font-size: 0.78rem; font-weight: 700; color: #e6edf3; margin-bottom: 4px; }
+    .pf-model { font-size: 0.68rem; color: #8b949e; }
+    
+    .pf-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--ac); margin: 10px auto 0;
+      animation: pf-pulse 2s ease-in-out infinite;
+    }
+    
+    @keyframes pf-pulse {
+      0%, 100% { opacity: 0.4; transform: scale(1); }
+      50% { opacity: 1; transform: scale(1.4); }
+    }
+    
+    .pf-arrow {
+      display: flex;
+      align-items: center;
+      padding: 0 4px;
+      color: #30363d;
+      font-size: 1.4rem;
+      user-select: none;
+    }
+    
+    .pf-loop-wrap {
+      border: 1.5px dashed #22c55e44;
+      border-radius: 16px;
+      padding: 10px 8px;
+      display: flex;
+      align-items: center;
+      gap: 0;
+      position: relative;
+    }
+    
+    .pf-loop-label {
+      position: absolute;
+      top: -11px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #0d1117;
+      padding: 0 8px;
+      font-size: 0.68rem;
+      color: #22c55e99;
+      font-weight: 600;
+      letter-spacing: 0.8px;
+      white-space: nowrap;
+    }
+    
+    .pf-score {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      padding: 0 6px;
+    }
+    
+    .pf-score-badge {
+      font-size: 0.65rem;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 999px;
+      white-space: nowrap;
+    }
+    
+    .pf-score-pass { background: rgba(34,197,94,0.15); color: #22c55e; border: 1px solid #22c55e44; }
+    .pf-score-fail { background: rgba(239,68,68,0.12); color: #f87171; border: 1px solid #f8717144; }
+    .pf-score-arrow { font-size: 0.75rem; color: #8b949e; }
+
+    /* Modern auto-height details drawer with CSS Grid transition */
+    .details-drawer {
+      display: grid;
+      grid-template-rows: 0fr;
+      transition: grid-template-rows 0.3s ease-out;
+      margin-top: 0;
+    }
+    
+    .details-drawer.open {
+      grid-template-rows: 1fr;
+      margin-top: 16px;
+    }
+    
+    .details-content {
+      overflow: hidden;
+      background: #161b22;
+      border: 0px solid transparent;
+      border-radius: 12px;
+      box-sizing: border-box;
+      transition: border 0.3s ease-out, border-color 0.3s ease-out;
+    }
+    
+    .details-drawer.open .details-content {
+      border: 1px solid var(--ac);
+    }
+    
+    .details-inner {
+      min-height: 0;
+      padding: 0;
+      opacity: 0;
+      transition: opacity 0.2s ease-out, padding 0.3s ease-out;
+    }
+    
+    .details-drawer.open .details-inner {
+      padding: 18px 22px;
+      opacity: 1;
+      transition-delay: 0.05s;
+    }
+    
+    .pf-detail-title {
+      font-size: 0.95rem;
+      font-weight: 700;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    
+    .details-inner ul {
+      margin: 0;
+      padding-left: 20px;
+    }
+    
+    .details-inner li {
+      font-size: 0.82rem;
+      color: #8b949e;
+      margin-bottom: 6px;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+
+<div id="pipeline-flow">
+  <div class="pf-track">
+
+    <!-- Brand DNA -->
+    <div id="node-dna" class="pf-node" style="--ac:#a78bfa;--ac-glow:rgba(167,139,250,0.2)" onclick="toggleNode('node-dna', 'Brand DNA Agent', 'Gemini 3 Flash', '🧩', 'dna', '#a78bfa')">
+      <div class="pf-icon">🧩</div>
+      <div class="pf-label">Brand DNA</div>
+      <div class="pf-model">Gemini 3 Flash</div>
+      <div class="pf-dot"></div>
+    </div>
+
+    <div class="pf-arrow">›</div>
+
+    <!-- Researcher -->
+    <div id="node-researcher" class="pf-node" style="--ac:#38bdf8;--ac-glow:rgba(56,189,248,0.2)" onclick="toggleNode('node-researcher', 'SEO Researcher Agent', 'Gemini 3 Flash', '🔍', 'researcher', '#38bdf8')">
+      <div class="pf-icon">🔍</div>
+      <div class="pf-label">Researcher</div>
+      <div class="pf-model">Gemini 3 Flash</div>
+      <div class="pf-dot"></div>
+    </div>
+
+    <div class="pf-arrow">›</div>
+
+    <!-- QA Loop -->
+    <div class="pf-loop-wrap">
+      <div class="pf-loop-label">🔁 LOOP &mdash; MÁX 3 ITERACIONES</div>
+
+      <!-- Copywriter -->
+      <div id="node-copywriter" class="pf-node" style="--ac:#fb923c;--ac-glow:rgba(251,146,60,0.2)" onclick="toggleNode('node-copywriter', 'Copywriter Agent', 'Claude Haiku / Sonnet', '✍️', 'copywriter', '#fb923c')">
+        <div class="pf-icon">✍️</div>
+        <div class="pf-label">Copywriter</div>
+        <div class="pf-model">Claude Haiku / Sonnet</div>
+        <div class="pf-dot"></div>
+      </div>
+
+      <div class="pf-arrow">›</div>
+
+      <!-- QA decision -->
+      <div class="pf-score">
+        <span class="pf-score-badge pf-score-pass">≥ 88 pts ✔</span>
+        <span class="pf-score-arrow">↕</span>
+        <span class="pf-score-badge pf-score-fail">&lt; 88 pts ↺</span>
+      </div>
+
+      <div class="pf-arrow">›</div>
+
+      <!-- QA Agent -->
+      <div id="node-qa" class="pf-node" style="--ac:#22c55e;--ac-glow:rgba(34,197,94,0.2)" onclick="toggleNode('node-qa', 'QA Agent (110 pts)', 'Gemini 3 Flash', '🧪', 'qa', '#22c55e')">
+        <div class="pf-icon">🧪</div>
+        <div class="pf-label">QA Agent</div>
+        <div class="pf-model">Gemini 3 Flash</div>
+        <div class="pf-dot"></div>
+      </div>
+    </div>
+
+    <div class="pf-arrow">›</div>
+
+    <!-- Save -->
+    <div id="node-output" class="pf-node" style="--ac:#f59e0b;--ac-glow:rgba(245,158,11,0.2)" onclick="toggleNode('node-output', 'Archivos generados', 'brands/&lt;marca&gt;/', '💾', 'output', '#f59e0b')">
+      <div class="pf-icon">💾</div>
+      <div class="pf-label">Output</div>
+      <div class="pf-model">brands/&lt;marca&gt;/</div>
+      <div class="pf-dot"></div>
+    </div>
+
+  </div>
+
+  <!-- Smoothly expanding details drawer -->
+  <div id="details-drawer" class="details-drawer">
+    <div class="details-content">
+      <div id="details-inner" class="details-inner"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+  // PostMessage helper
+  function sendMessageToStreamlitClient(type, data) {
+    const outData = Object.assign({ isStreamlitMessage: true, type: type }, data);
+    window.parent.postMessage(outData, "*");
+  }
+
+  function sendHeight() {
+    const height = document.body.offsetHeight || document.documentElement.scrollHeight;
+    sendMessageToStreamlitClient("streamlit:setFrameHeight", { height: height });
+  }
+
+  // Notify Streamlit that the component is ready
+  sendMessageToStreamlitClient("streamlit:componentReady", { apiVersion: 1 });
+
+  // Listen for render messages (initial setup)
+  window.addEventListener("message", (event) => {
+    if (event.data.type === "streamlit:render") {
+      sendHeight();
+    }
+  });
+
+  // Observe size changes dynamically so height updates match CSS transitions perfectly
+  const resizeObserver = new ResizeObserver(() => {
+    sendHeight();
+  });
+  resizeObserver.observe(document.body);
+
+  const contents = {
+    dna: `
+      <li>Navega la web de la marca con Playwright</li>
+      <li>Extrae voz, pilares, vocabulario, CTAs y audiencia</li>
+      <li>Usa Google Search para contexto adicional</li>
+      <li>Genera <code>brand-dna.md</code> (se guarda localmente)</li>
+      <li><em>Condicional:</em> se omite si ya existe el DNA</li>
+    `,
+    researcher: `
+      <li>Analiza los 10 primeros resultados del SERP</li>
+      <li>Extrae entidades, headings, conteo de palabras</li>
+      <li>Identifica brechas de contenido vs competidores</li>
+      <li>Sugiere links internos del inventario de URLs</li>
+      <li>Recomienda etapa del funnel (TOFU/MOFU/BOFU)</li>
+      <li>Genera el <em>research brief</em> completo</li>
+    `,
+    copywriter: `
+      <li>Recibe research brief + Brand DNA + feedback del QA</li>
+      <li>Usa el Skill Pack de redacción (SKILL.md + referencias)</li>
+      <li>Adapta la estructura al tipo de página (blog, landing, etc.)</li>
+      <li>Inserta links internos automáticamente</li>
+      <li>Output: HTML semántico con JSON-LD o Markdown + frontmatter</li>
+    `,
+    qa: `
+      <li>🏢 Brand Coherence &mdash; 20 pts</li>
+      <li>⚠️ Ethical Claims &mdash; 15 pts</li>
+      <li>🔍 SEO Technical &mdash; 20 pts</li>
+      <li>📝 Content Quality &mdash; 20 pts</li>
+      <li>✅ Factual Accuracy &mdash; 10 pts</li>
+      <li>🇦🇷 Language Quality &mdash; 10 pts</li>
+      <li>💡 Information Gain &mdash; 5 pts</li>
+      <li>🤖 Humanization &mdash; 10 pts</li>
+    `,
+    output: `
+      <li><code>brand-dna.md</code></li>
+      <li>Contenido HTML o Markdown con frontmatter YAML</li>
+      <li>Reporte de QA detallado (<code>__qa_report.md</code>)</li>
+      <li>Nombrado automático por fecha, versión y keyword</li>
+    `
+  };
+
+  let currentSelected = null;
+
+  function toggleNode(nodeId, label, model, icon, contentKey, accentColor) {
+    const drawer = document.getElementById('details-drawer');
+    const inner = document.getElementById('details-inner');
+    const nodes = document.querySelectorAll('.pf-node');
+    const clickedNode = document.getElementById(nodeId);
+
+    if (currentSelected === nodeId) {
+      // Close
+      drawer.classList.remove('open');
+      clickedNode.classList.remove('open');
+      currentSelected = null;
+      setTimeout(() => {
+        if (!currentSelected) {
+          inner.innerHTML = '';
+        }
+      }, 300);
+    } else {
+      // Switch / Open
+      nodes.forEach(n => n.classList.remove('open'));
+      
+      drawer.style.setProperty('--ac', accentColor);
+      drawer.style.setProperty('--ac-glow', accentColor + '22');
+      
+      inner.innerHTML = `
+        <div class="pf-detail-title" style="color: ${accentColor}">
+          <span>${icon}</span> <span>${label}</span>
+          <span style="font-size:0.72rem; color:#8b949e; font-weight:normal; margin-left:auto;">${model}</span>
+        </div>
+        <ul>${contents[contentKey]}</ul>
+      `;
+
+      clickedNode.classList.add('open');
+      drawer.classList.add('open');
+      currentSelected = nodeId;
+    }
+  }
+
+  // Close when clicking outside nodes/drawer
+  document.addEventListener('click', function(e) {
+    if (!e.target.closest('.pf-node') && !e.target.closest('#details-drawer')) {
+      const drawer = document.getElementById('details-drawer');
+      const nodes = document.querySelectorAll('.pf-node');
+      drawer.classList.remove('open');
+      nodes.forEach(n => n.classList.remove('open'));
+      currentSelected = null;
+    }
+  });
+</script>
+
+</body>
+</html>
