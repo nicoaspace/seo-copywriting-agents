@@ -1,8 +1,10 @@
 """
 Phase 2: SEO Researcher Agent
 
-Uses Gemini with Google Search grounding + serp_analyzer tool to conduct
-comprehensive SEO research and produce a research brief.
+Default: Gemini Google Search grounding + serp_url_finder (grounding metadata).
+
+When brightdata_option=true: Bright Data SERP API for web/SERP discovery (no
+grounding metadata) — same research brief workflow and build_serp_table analysis.
 """
 
 from pathlib import Path
@@ -14,8 +16,9 @@ from google.genai import types
 
 from config import GEMINI_MODEL, load_skill
 from tools.web_search import web_search, batch_web_search
+from tools.brightdata_search import brightdata_web_search, brightdata_batch_web_search
 from tools.serp_analyzer import analyze_serp_url
-from tools.serp_url_finder import find_serp_urls, build_serp_table
+from tools.serp_url_finder import find_serp_urls, find_serp_urls_brightdata, build_serp_table
 from tools.internal_link_analyzer import analyze_internal_links
 
 
@@ -58,27 +61,51 @@ def _after_researcher_callback(callback_context: CallbackContext) -> None:
     return None
 
 
-def create_researcher_agent() -> Agent:
-    instruction = load_skill("researcher_skill.md")
+def create_researcher_agent(brightdata_option: bool = False) -> Agent:
+    """
+    Build the SEO Researcher agent.
 
-    return Agent(
-        name="SEOResearcherAgent",
-        model=GEMINI_MODEL,
-        description=(
-            "Conducts comprehensive SEO research: SERP analysis of top results, "
-            "content gap analysis, entity mapping, user intent classification, "
-            "country-specific context gathering, and internal-link matching "
-            "against the brand's real URL inventory."
-        ),
-        instruction=instruction,
-        tools=[
+    Args:
+        brightdata_option: When True, use Bright Data SERP for Google search and
+            URL discovery (no Gemini grounding). When False (default), use Gemini
+            grounding + find_serp_urls.
+    """
+    if brightdata_option:
+        instruction = load_skill("researcher_skill_brightdata.md")
+        search_tools = [
+            brightdata_web_search,
+            brightdata_batch_web_search,
+            find_serp_urls_brightdata,
+            build_serp_table,
+            analyze_internal_links,
+        ]
+        description = (
+            "Conducts comprehensive SEO research using Bright Data Google SERP: "
+            "SERP analysis of top organic results, content gaps, entity mapping, "
+            "and internal-link matching (no Gemini grounding metadata)."
+        )
+    else:
+        instruction = load_skill("researcher_skill.md")
+        search_tools = [
             web_search,
             batch_web_search,
             find_serp_urls,
             build_serp_table,
-            analyze_serp_url,
             analyze_internal_links,
-        ],
+        ]
+        description = (
+            "Conducts comprehensive SEO research: SERP analysis of top results, "
+            "content gap analysis, entity mapping, user intent classification, "
+            "country-specific context gathering, and internal-link matching "
+            "against the brand's real URL inventory."
+        )
+
+    return Agent(
+        name="SEOResearcherAgent",
+        model=GEMINI_MODEL,
+        description=description,
+        instruction=instruction,
+        tools=search_tools,
         output_key="research_brief",
         after_agent_callback=_after_researcher_callback,
         generate_content_config=types.GenerateContentConfig(

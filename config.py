@@ -269,6 +269,11 @@ def load_google_key() -> str:
     return key if key else _load_key_from_env_file("GOOGLE_API_KEY")
 
 
+def load_brightdata_key() -> str:
+    key = os.environ.get("BRIGHTDATA_API_KEY", "").strip()
+    return key if key else _load_key_from_env_file("BRIGHTDATA_API_KEY")
+
+
 def _patch_litellm_retry_after() -> None:
     """
     Monkey-patch litellm.acompletion so that on a 429 RateLimitError it reads
@@ -368,6 +373,10 @@ def setup_env_keys(*, validate: bool = True) -> None:
         k = _load_key_from_env_file("ANTHROPIC_API_KEY")
         if k:
             os.environ["ANTHROPIC_API_KEY"] = k
+    if not os.environ.get("BRIGHTDATA_API_KEY"):
+        k = _load_key_from_env_file("BRIGHTDATA_API_KEY")
+        if k:
+            os.environ["BRIGHTDATA_API_KEY"] = k
 
     _patch_litellm_retry_after()
 

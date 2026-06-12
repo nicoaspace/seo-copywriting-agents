@@ -335,6 +335,13 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
+    parser.add_argument("--brightdata-option", required=True, choices=["true", "false"],
+                        dest="brightdata_option",
+                        help=("'true' = researcher uses Bright Data Google SERP API "
+                              "(requires BRIGHTDATA_API_KEY; no Gemini grounding). "
+                              "'false' = researcher uses Gemini Google Search grounding (default). "
+                              "When true, Bright Data takes precedence over grounding for all researcher searches."))
+
     parser.add_argument("--brand", required=True,
                         help="Brand identifier (folder name under brands/)")
     parser.add_argument("--run-dna", required=True, choices=["true", "false"],
@@ -380,6 +387,14 @@ def parse_args() -> argparse.Namespace:
                               "records it as-is and the Copywriter writes directly for that stage."))
 
     args = parser.parse_args()
+
+    if args.brightdata_option == "true":
+        from config import load_brightdata_key
+        if not load_brightdata_key():
+            parser.error(
+                "--brightdata-option true requires BRIGHTDATA_API_KEY. "
+                "Set it in env/.env.local or the environment."
+            )
 
     # Sanitize free-form text inputs (S1: prompt-injection hardening).
     # Strip control chars (except tab/newline), collapse whitespace, cap length.
@@ -444,6 +459,7 @@ def build_pipeline(
     page_type: str = "blog-post",
     language: str = "es",
     funnel_stage: str = "auto",
+    brightdata_option: bool = False,
 ) -> Agent:
     """Build the full agent pipeline."""
     sub_agents = []
@@ -455,8 +471,8 @@ def build_pipeline(
     if run_dna:
         sub_agents.append(create_brand_dna_agent())
 
-    # Phase 2: SEO Researcher
-    sub_agents.append(create_researcher_agent())
+    # Phase 2: SEO Researcher (Bright Data SERP or Gemini grounding)
+    sub_agents.append(create_researcher_agent(brightdata_option=brightdata_option))
 
     # Phase 3+4: Copywriter ↔ QA Loop
     qa_loop = LoopAgent(
@@ -487,7 +503,7 @@ _AGENT_INPUT_STATE_KEYS: dict[str, list[str]] = {
         "brand_dna", "keyword", "secondary_keywords", "topic", "page_type",
         "language", "country", "format", "funnel_stage", "funnel_stage_mode",
         "resolved_funnel_stage", "link_opportunities", "url_inventory_size",
-        "current_date", "current_year",
+        "current_date", "current_year", "brightdata_option",
     ],
     "SEOCopywriterAgent": [
         "research_brief", "brand_dna", "keyword", "topic", "page_type",
@@ -528,12 +544,19 @@ async def run_pipeline(args: argparse.Namespace, tracker: TokenTracker, agent_lo
     from tools import reset_batch_search_counter, get_batch_search_stats
     reset_batch_search_counter()
 
+    use_brightdata = args.brightdata_option == "true"
     pipeline = build_pipeline(
         run_dna=(args.run_dna == "true"),
         page_type=args.page_type,
         language=args.language,
         funnel_stage=args.funnel_stage,
+        brightdata_option=use_brightdata,
     )
+
+    if use_brightdata:
+        print("\n  ▸ Researcher: Bright Data Google SERP (brightdata_option=true)")
+    else:
+        print("\n  ▸ Researcher: Gemini Google Search grounding (brightdata_option=false)")
 
     # ── URL inventory: build new or load existing ─────────────────────────────
     from tools.sitemap_fetcher import build_url_inventory, load_url_inventory
@@ -614,6 +637,7 @@ async def run_pipeline(args: argparse.Namespace, tracker: TokenTracker, agent_lo
         "brand_dna": "",
         "link_opportunities": "",
         "structural_validation": "STRUCTURAL: (pending — first iteration not yet drafted)",
+        "brightdata_option": args.brightdata_option,
         # Word-count targets (populated by copywriter before-callback before
         # the SKILL prompt is rendered). Pre-seed empty values so ADK's
         # template substitution does not raise on the first agent that
@@ -1270,6 +1294,7 @@ def main():
     print(f"SEO Copywriting Agents Pipeline")
     print(f"{'='*60}")
     print(f"  Brand:      {args.brand}")
+    print(f"  BrightData: {args.brightdata_option}")
     print(f"  Run DNA:    {args.run_dna}")
     print(f"  URL:        {args.url or '(using existing DNA)'}")
     print(f"  Sitemap URL:{args.sitemap_url or '(not regenerating)'}")

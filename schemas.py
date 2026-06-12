@@ -99,11 +99,20 @@ class SerpGroundingDump(ValidatedModel):
     error: Optional[str] = Field(None)
 
 
+class SerpBrightdataDump(ValidatedModel):
+    engine: str = Field(default="google")
+    organic_count: int = Field(0)
+    dump_path: Optional[str] = Field(None)
+    error: Optional[str] = Field(None)
+
+
 class FindSerpUrlsResult(ValidatedModel):
     query: str = Field(...)
     urls: List[SerpUrl] = Field(default_factory=list)
     skipped: List[SerpSkippedItem] = Field(default_factory=list)
     grounding_dumps: List[SerpGroundingDump] = Field(default_factory=list)
+    brightdata_dumps: List[SerpBrightdataDump] = Field(default_factory=list)
+    serp_source: str = Field(default="gemini_grounding")
     warning: Optional[str] = Field(None)
 
 

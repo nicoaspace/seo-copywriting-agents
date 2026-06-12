@@ -8,6 +8,7 @@ Quick-reference for all CLI arguments and common command patterns.
 
 ```bash
 python main.py \
+    --brightdata-option <true|false> \
     --brand <BRAND> \
     --run-dna <true|false> \
     --use-sitemap <true|false> \
@@ -29,6 +30,7 @@ python main.py \
 
 | Argument | Required | Default | Description |
 |----------|----------|---------|-------------|
+| `--brightdata-option` | Yes | — | `true` = Researcher uses **Bright Data** Google SERP API (requires `BRIGHTDATA_API_KEY`; no Gemini grounding). `false` = Gemini Google Search grounding (default). **When `true`, Bright Data wins** over grounding for all researcher searches. |
 | `--brand` | Yes | — | Brand identifier. Maps to `brands/<brand>/` folder |
 | `--run-dna` | Yes | — | `true` = generate new Brand DNA (requires `--url`); `false` = load existing `brand-dna.md` |
 | `--url` | If `--run-dna true` | — | Brand website URL used to generate the Brand DNA |
@@ -42,6 +44,34 @@ python main.py \
 | `--country` | Yes | — | Target country for tropicalization and geo-filtered search |
 | `--format` | No | `text` | Output: `text` (Markdown) or `html` (semantic HTML + JSON-LD) |
 | `--internal-links` | No | `""` | Comma-separated URLs to embed as internal links. Each appears once, distributed. Overrides inventory-based links. |
+
+### Bright Data (researcher only)
+
+Set in `env/.env.local`:
+
+```
+BRIGHTDATA_API_KEY=your_key
+BRIGHTDATA_ZONE=ai_agent2
+```
+
+- `BRIGHTDATA_ZONE` is optional (defaults to `ai_agent2`, same as advanced-langflow-web-agent-main).
+- Raw SERP JSON dumps: `.tmp/brightdata/`
+- Tools when `--brightdata-option true`: `brightdata_web_search`, `brightdata_batch_web_search`, `find_serp_urls_brightdata`, then `build_serp_table` (unchanged scraping/analysis).
+
+Example:
+
+```bash
+python main.py \
+    --brightdata-option true \
+    --brand "Siglo BPO" \
+    --run-dna false \
+    --use-sitemap true \
+    --keyword "outsourcing que es" \
+    --topic "Outsourcing en México" \
+    --page-type blog-post \
+    --country méxico \
+    --format html
+```
 
 ---
 

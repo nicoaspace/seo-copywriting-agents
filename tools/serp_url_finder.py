@@ -367,6 +367,164 @@ def _gemini_grounded_chunks(
     return best_chunks, dump_log
 
 
+async def _collect_serp_urls_from_candidates(
+    candidates: list[dict],
+    query: str,
+    country: str,
+    top_n: int,
+) -> dict:
+    """Resolve, locale-filter, and probe SERP URL candidates (shared by both backends)."""
+    if not candidates:
+        out = {
+            "query": query,
+            "urls": [],
+            "skipped": [],
+            "warning": "No SERP URL candidates to process.",
+        }
+        try:
+            return FindSerpUrlsResult(**out).dict()
+        except Exception:
+            return out
+
+    loop = asyncio.get_event_loop()
+
+    async def _resolve(c: dict) -> tuple[dict, tuple[str, str] | None]:
+        uri = c["uri"]
+        if _is_redirect_uri(uri):
+            resolved = await loop.run_in_executor(_RESOLVE_POOL, _resolve_url_sync, uri)
+        else:
+            ok, reason = await loop.run_in_executor(_RESOLVE_POOL, _probe_url_sync, uri)
+            resolved = (uri, reason) if ok else None
+        return c, resolved
+
+    resolved_results = await asyncio.gather(
+        *[_resolve(c) for c in candidates[:7]]
+    )
+
+    urls: list[dict] = []
+    skipped: list[dict] = []
+    seen_urls: set[str] = set()
+
+    for chunk, resolved in resolved_results:
+        if resolved is None:
+            skipped.append({"uri": chunk["uri"], "reason": "redirect resolution failed"})
+            continue
+        final_url, http_reason = resolved
+
+        try:
+            parsed = urlparse(final_url)
+            dedup_key = f"{parsed.scheme}://{parsed.netloc}{parsed.path}".rstrip("/")
+        except Exception:
+            dedup_key = final_url
+
+        if dedup_key in seen_urls:
+            skipped.append({"uri": final_url, "reason": "duplicate"})
+            continue
+
+        if not _matches_locale(final_url, country):
+            skipped.append({"uri": final_url, "reason": f"locale mismatch ({country})"})
+            continue
+
+        ok, probe_reason = await loop.run_in_executor(_RESOLVE_POOL, _probe_url_sync, final_url)
+        if not ok:
+            skipped.append({"uri": final_url, "reason": f"probe failed: {probe_reason}"})
+            continue
+
+        seen_urls.add(dedup_key)
+        urls.append({
+            "rank": len(urls) + 1,
+            "url": final_url,
+            "title": chunk["title"],
+            "source_uri": chunk["uri"],
+            "http_status": probe_reason,
+        })
+        if len(urls) >= top_n:
+            break
+
+    out: dict = {"query": query, "urls": urls, "skipped": skipped}
+    if len(urls) < top_n:
+        out["warning"] = (
+            f"Only {len(urls)}/{top_n} valid SERP URLs survived locale + probe filters."
+        )
+    try:
+        return FindSerpUrlsResult(**out).dict()
+    except Exception:
+        return out
+
+
+async def find_serp_urls_brightdata(
+    query: str,
+    country: str = "",
+    language: str = "",
+    top_n: int = 3,
+) -> dict:
+    """
+    Find top-ranking publisher URLs via Bright Data Google SERP (no Gemini grounding).
+
+    **CALL EXACTLY ONCE per research session.** Uses Bright Data's structured
+    organic results (`link`, `title`) — same locale filter + HEAD-probe pipeline
+    as the grounding path. Raw responses are saved under `.tmp/brightdata/`.
+
+    Args:
+        query: Search query (e.g. "outsourcing que es méxico").
+        country: Target country for locale filtering.
+        language: Informational (reserved).
+        top_n: Max URLs to return (default 3).
+
+    Returns:
+        Same shape as `find_serp_urls`, with `serp_source: "brightdata"` and
+        `brightdata_dumps` instead of `grounding_dumps`.
+    """
+    from tools.brightdata_client import organic_to_candidates, serp_search
+
+    data = serp_search(query, engine="google")
+    dump_meta: list[dict] = []
+    if not data:
+        dump_meta.append({
+            "engine": "google",
+            "organic_count": 0,
+            "dump_path": None,
+            "error": "Bright Data SERP request returned no data",
+        })
+        out = {
+            "query": query,
+            "urls": [],
+            "skipped": [],
+            "grounding_dumps": [],
+            "brightdata_dumps": dump_meta,
+            "serp_source": "brightdata",
+            "warning": (
+                "Bright Data returned no SERP data. Check BRIGHTDATA_API_KEY, "
+                "BRIGHTDATA_ZONE, and .tmp/brightdata/ dumps if present."
+            ),
+        }
+        try:
+            return FindSerpUrlsResult(**out).dict()
+        except Exception:
+            return out
+
+    organic = data.get("organic") or []
+    dump_meta.append({
+        "engine": data.get("engine", "google"),
+        "organic_count": len(organic),
+        "dump_path": data.get("dump_path"),
+        "error": None,
+    })
+    candidates = organic_to_candidates(organic)
+    collected = await _collect_serp_urls_from_candidates(candidates, query, country, top_n)
+    collected["grounding_dumps"] = []
+    collected["brightdata_dumps"] = dump_meta
+    collected["serp_source"] = "brightdata"
+    if not collected.get("urls") and not collected.get("warning"):
+        collected["warning"] = (
+            "Bright Data returned organic rows but none passed locale/probe filters."
+        )
+    try:
+        return FindSerpUrlsResult(**collected).dict()
+    except Exception:
+        return collected
+
+
 async def find_serp_urls(
     query: str,
     country: str = "",
@@ -415,6 +573,8 @@ async def find_serp_urls(
             "urls": [],
             "skipped": [],
             "grounding_dumps": dump_log,
+            "brightdata_dumps": [],
+            "serp_source": "gemini_grounding",
             "warning": (
                 "Gemini returned no grounding chunks across "
                 f"{len(dump_log)} attempts. See grounding_dumps[*].dump_path "
@@ -426,79 +586,16 @@ async def find_serp_urls(
         except Exception:
             return out
 
-    # Resolve up to 7 candidates (cap latency).
-    candidates = chunks[:7]
-    loop = asyncio.get_event_loop()
-
-    async def _resolve(c: dict) -> tuple[dict, tuple[str, str] | None]:
-        uri = c["uri"]
-        if _is_redirect_uri(uri):
-            resolved = await loop.run_in_executor(_RESOLVE_POOL, _resolve_url_sync, uri)
-        else:
-            # Already a direct publisher URL — just probe.
-            ok, reason = await loop.run_in_executor(_RESOLVE_POOL, _probe_url_sync, uri)
-            resolved = (uri, reason) if ok else None
-        return c, resolved
-
-    resolved_results = await asyncio.gather(*[_resolve(c) for c in candidates])
-
-    urls: list[dict] = []
-    skipped: list[dict] = []
-    seen_urls: set[str] = set()
-
-    for chunk, resolved in resolved_results:
-        if resolved is None:
-            skipped.append({"uri": chunk["uri"], "reason": "redirect resolution failed"})
-            continue
-        final_url, http_reason = resolved
-
-        # Strip URL fragments and query bloat for dedup (but keep query for fetch).
-        try:
-            parsed = urlparse(final_url)
-            dedup_key = f"{parsed.scheme}://{parsed.netloc}{parsed.path}".rstrip("/")
-        except Exception:
-            dedup_key = final_url
-
-        if dedup_key in seen_urls:
-            skipped.append({"uri": final_url, "reason": "duplicate"})
-            continue
-
-        if not _matches_locale(final_url, country):
-            skipped.append({"uri": final_url, "reason": f"locale mismatch ({country})"})
-            continue
-
-        # Final HEAD-probe — confirms the resolved URL still answers 2xx/3xx.
-        ok, probe_reason = await loop.run_in_executor(_RESOLVE_POOL, _probe_url_sync, final_url)
-        if not ok:
-            skipped.append({"uri": final_url, "reason": f"probe failed: {probe_reason}"})
-            continue
-
-        seen_urls.add(dedup_key)
-        urls.append({
-            "rank": len(urls) + 1,
-            "url": final_url,
-            "title": chunk["title"],
-            "source_uri": chunk["uri"],
-            "http_status": probe_reason,
-        })
-        if len(urls) >= top_n:
-            break
-
-    out: dict = {
-        "query": query,
-        "urls": urls,
-        "skipped": skipped,
-        "grounding_dumps": dump_log,
-    }
-    if len(urls) < top_n:
-        out["warning"] = (
-            f"Only {len(urls)}/{top_n} valid SERP URLs survived locale + probe filters. "
-            f"See grounding_dumps[*].dump_path for raw Gemini responses."
-        )
+    collected = await _collect_serp_urls_from_candidates(chunks, query, country, top_n)
+    collected["grounding_dumps"] = dump_log
+    collected["brightdata_dumps"] = []
+    collected["serp_source"] = "gemini_grounding"
+    if len(collected.get("urls", [])) < top_n and collected.get("warning"):
+        collected["warning"] += " See grounding_dumps[*].dump_path for raw Gemini responses."
     try:
-        return FindSerpUrlsResult(**out).dict()
+        return FindSerpUrlsResult(**collected).dict()
     except Exception:
-        return out
+        return collected
 
 
 # ──────────────────────────────────────────────────────────────────────────────

@@ -46,6 +46,20 @@ def get_batch_search_stats() -> dict:
     }
 
 
+def record_batch_search_call(query_count: int) -> None:
+    """Increment shared batch-search counters (Gemini or Bright Data backends)."""
+    global _batch_call_count, _batch_query_total
+    _batch_call_count += 1
+    _batch_query_total += query_count
+    if _batch_call_count > BATCH_WEB_SEARCH_SOFT_LIMIT:
+        print(
+            f"  ⚠ batch_web_search soft-limit exceeded: "
+            f"call #{_batch_call_count} (limit={BATCH_WEB_SEARCH_SOFT_LIMIT}, "
+            f"total queries={_batch_query_total}). "
+            f"Tip: plan queries up front and batch them in a single call."
+        )
+
+
 def _single_search(query: str) -> dict:
     """Execute a single grounded search (sync, runs in thread pool)."""
     client = genai.Client()
@@ -169,17 +183,7 @@ async def batch_web_search(queries: list[str]) -> dict[str, dict]:
     Returns:
         A dict mapping each query to its structured search result.
     """
-    global _batch_call_count, _batch_query_total
-    _batch_call_count += 1
-    _batch_query_total += len(queries)
-
-    if _batch_call_count > BATCH_WEB_SEARCH_SOFT_LIMIT:
-        print(
-            f"  ⚠ batch_web_search soft-limit exceeded: "
-            f"call #{_batch_call_count} (limit={BATCH_WEB_SEARCH_SOFT_LIMIT}, "
-            f"total queries={_batch_query_total}). "
-            f"Tip: plan queries up front and batch them in a single call."
-        )
+    record_batch_search_call(len(queries))
 
     loop = asyncio.get_event_loop()
     tasks = [loop.run_in_executor(_search_pool, _single_search, q) for q in queries]
