@@ -480,11 +480,494 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("📝 SEO Copywriting Agents")
-st.caption(
-    "Pipeline multi-agente para generar copy SEO. "
-    "Esta UI envuelve el mismo pipeline del CLI (`python main.py`)."
-)
+# ──────────────────────────────────────────────────────────────────────────────
+# Auth gate — password from APP_PASSWORD env var
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _load_app_password() -> str:
+    """Load APP_PASSWORD from env or env/.env.local."""
+    pw = os.environ.get("APP_PASSWORD", "").strip()
+    if pw:
+        return pw
+    env_file = Path(__file__).resolve().parent / "env" / ".env.local"
+    if env_file.exists():
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line.startswith("APP_PASSWORD="):
+                return line.split("=", 1)[1].strip().strip('"').strip("'")
+    return ""
+
+_APP_PASSWORD = _load_app_password()
+
+if "authenticated" not in st.session_state:
+    st.session_state["authenticated"] = False
+if "run_used" not in st.session_state:
+    st.session_state["run_used"] = False
+
+
+def _show_landing_page() -> None:
+    """Render the professional landing + auth page."""
+    st.markdown("""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+    html, body, [data-testid="stAppViewContainer"] {
+        background: #0d1117 !important;
+        font-family: 'Inter', sans-serif;
+    }
+    .landing-hero {
+        text-align: center;
+        padding: 56px 0 20px;
+    }
+    .landing-badge {
+        display: inline-block;
+        background: linear-gradient(135deg, #1a2a1a, #0d2d1a);
+        border: 1px solid #22c55e44;
+        color: #22c55e;
+        font-size: 0.78rem;
+        font-weight: 600;
+        letter-spacing: 1.5px;
+        text-transform: uppercase;
+        padding: 6px 18px;
+        border-radius: 999px;
+        margin-bottom: 24px;
+    }
+    .landing-title {
+        font-size: 3rem;
+        font-weight: 800;
+        color: #f0f6fc;
+        line-height: 1.15;
+        margin: 0 0 16px;
+        background: linear-gradient(135deg, #ffffff 30%, #22c55e);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+    }
+    .landing-sub {
+        font-size: 1.15rem;
+        color: #8b949e;
+        max-width: 640px;
+        margin: 0 auto 40px;
+        line-height: 1.7;
+    }
+    .feature-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 16px;
+        margin: 32px 0 48px;
+    }
+    .feature-card {
+        background: #161b22;
+        border: 1px solid #21262d;
+        border-radius: 12px;
+        padding: 20px 22px;
+        transition: border-color 0.25s, transform 0.2s;
+    }
+    .feature-card:hover {
+        border-color: #22c55e55;
+        transform: translateY(-2px);
+    }
+    .feature-icon { font-size: 1.8rem; margin-bottom: 10px; }
+    .feature-title {
+        font-size: 0.92rem;
+        font-weight: 700;
+        color: #e6edf3;
+        margin-bottom: 6px;
+    }
+    .feature-desc {
+        font-size: 0.82rem;
+        color: #8b949e;
+        line-height: 1.5;
+    }
+    .section-title {
+        font-size: 1.5rem;
+        font-weight: 700;
+        color: #f0f6fc;
+        margin: 48px 0 6px;
+        text-align: center;
+    }
+    .section-sub {
+        font-size: 0.92rem;
+        color: #8b949e;
+        text-align: center;
+        margin-bottom: 32px;
+    }
+    .auth-box {
+        background: #161b22;
+        border: 1px solid #21262d;
+        border-radius: 16px;
+        padding: 36px 40px;
+        max-width: 440px;
+        margin: 48px auto 0;
+        text-align: center;
+    }
+    .auth-title {
+        font-size: 1.25rem;
+        font-weight: 700;
+        color: #f0f6fc;
+        margin-bottom: 6px;
+    }
+    .auth-note {
+        font-size: 0.84rem;
+        color: #8b949e;
+        margin-bottom: 24px;
+        line-height: 1.5;
+    }
+    .auth-hint {
+        font-size: 0.8rem;
+        color: #3b82f6;
+        margin-top: 14px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    st.markdown("""
+    <div class="landing-hero">
+      <div class="landing-badge">🧠 Multi-Agent SEO Pipeline</div>
+      <div class="landing-title">SEO Copywriting Agents</div>
+      <div class="landing-sub">
+        Un pipeline de inteligencia artificial multi-agente que genera
+        copy SEO de calidad profesional &mdash; desde el ADN de una marca
+        hasta el contenido final revisado por QA, en minutos.
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Feature cards
+    st.markdown("""
+    <div class="feature-grid">
+      <div class="feature-card">
+        <div class="feature-icon">🧩</div>
+        <div class="feature-title">Brand DNA</div>
+        <div class="feature-desc">Extrae automáticamente la voz, pilares de mensajería y vocabulario de la marca desde su web.</div>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🔍</div>
+        <div class="feature-title">Investigación SEO</div>
+        <div class="feature-desc">Analiza los primeros resultados de Google para identificar brechas de contenido y palabras clave.</div>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">✍️</div>
+        <div class="feature-title">Redacción IA</div>
+        <div class="feature-desc">Claude redacta el contenido usando las instrucciones del skill pack y el brief de investigación.</div>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🧪</div>
+        <div class="feature-title">QA Iterativo</div>
+        <div class="feature-desc">El agente QA evalúa el contenido en 8 categorías. Si no pasa, lo envía de vuelta para revisión.</div>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">📊</div>
+        <div class="feature-title">Funnel TOFU/MOFU/BOFU</div>
+        <div class="feature-desc">El Researcher identifica la etapa del funnel óptima o puede especificarse manualmente.</div>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🔗</div>
+        <div class="feature-title">Internal Links Automáticos</div>
+        <div class="feature-desc">Analiza el inventario de URLs del sitemap y sugiere enlaces internos relevantes semánticamente.</div>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Interactive flowchart
+    st.markdown('<div class="section-title">Cómo funciona el Pipeline</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-sub">Pasa el cursor sobre cada agente para ver sus detalles. Haz clic para expandir.</div>', unsafe_allow_html=True)
+
+    flow_html = """
+    <style>
+    #pipeline-flow {
+      font-family: 'Inter', sans-serif;
+      background: #0d1117;
+      border: 1px solid #21262d;
+      border-radius: 16px;
+      padding: 32px 16px 24px;
+      overflow-x: auto;
+    }
+    .pf-track {
+      display: flex;
+      align-items: stretch;
+      justify-content: center;
+      gap: 0;
+      flex-wrap: nowrap;
+      min-width: 800px;
+    }
+    .pf-node {
+      position: relative;
+      background: #161b22;
+      border: 1.5px solid #30363d;
+      border-radius: 14px;
+      padding: 18px 14px 14px;
+      width: 148px;
+      min-width: 148px;
+      cursor: pointer;
+      transition: border-color 0.25s, box-shadow 0.25s, transform 0.2s;
+      text-align: center;
+    }
+    .pf-node:hover {
+      border-color: var(--ac);
+      box-shadow: 0 0 20px var(--ac-glow);
+      transform: translateY(-3px);
+      z-index: 10;
+    }
+    .pf-node.open {
+      border-color: var(--ac);
+      box-shadow: 0 0 28px var(--ac-glow);
+    }
+    .pf-icon { font-size: 2rem; margin-bottom: 8px; }
+    .pf-label { font-size: 0.78rem; font-weight: 700; color: #e6edf3; margin-bottom: 4px; }
+    .pf-model { font-size: 0.68rem; color: #8b949e; }
+    .pf-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--ac); margin: 10px auto 0;
+      animation: pf-pulse 2s ease-in-out infinite;
+    }
+    @keyframes pf-pulse {
+      0%, 100% { opacity: 0.4; transform: scale(1); }
+      50% { opacity: 1; transform: scale(1.4); }
+    }
+    .pf-arrow {
+      display: flex;
+      align-items: center;
+      padding: 0 4px;
+      color: #30363d;
+      font-size: 1.4rem;
+      user-select: none;
+      padding-top: 0;
+    }
+    .pf-detail {
+      display: none;
+      position: absolute;
+      top: calc(100% + 12px);
+      left: 50%;
+      transform: translateX(-50%);
+      background: #1c2128;
+      border: 1px solid var(--ac);
+      border-radius: 10px;
+      padding: 14px 16px;
+      width: 230px;
+      z-index: 100;
+      text-align: left;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+    }
+    .pf-node.open .pf-detail { display: block; }
+    .pf-detail-title { font-size: 0.8rem; font-weight: 700; color: var(--ac); margin-bottom: 8px; }
+    .pf-detail ul { margin: 0; padding-left: 16px; }
+    .pf-detail li { font-size: 0.76rem; color: #c9d1d9; margin-bottom: 4px; line-height: 1.4; }
+    .pf-loop-wrap {
+      border: 1.5px dashed #22c55e44;
+      border-radius: 16px;
+      padding: 10px 8px;
+      display: flex;
+      align-items: stretch;
+      gap: 0;
+      position: relative;
+    }
+    .pf-loop-label {
+      position: absolute;
+      top: -11px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #0d1117;
+      padding: 0 8px;
+      font-size: 0.68rem;
+      color: #22c55e99;
+      font-weight: 600;
+      letter-spacing: 0.8px;
+      white-space: nowrap;
+    }
+    .pf-score {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      padding: 0 6px;
+    }
+    .pf-score-badge {
+      font-size: 0.65rem;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 999px;
+      white-space: nowrap;
+    }
+    .pf-score-pass { background: rgba(34,197,94,0.15); color: #22c55e; border: 1px solid #22c55e44; }
+    .pf-score-fail { background: rgba(239,68,68,0.12); color: #f87171; border: 1px solid #f8717144; }
+    .pf-score-arrow { font-size: 0.75rem; color: #8b949e; }
+    </style>
+
+    <div id="pipeline-flow">
+      <div class="pf-track">
+
+        <!-- Brand DNA -->
+        <div class="pf-node" style="--ac:#a78bfa;--ac-glow:rgba(167,139,250,0.2)" onclick="toggle(this)">
+          <div class="pf-icon">🧩</div>
+          <div class="pf-label">Brand DNA</div>
+          <div class="pf-model">Gemini 3 Flash</div>
+          <div class="pf-dot"></div>
+          <div class="pf-detail">
+            <div class="pf-detail-title">🧩 Brand DNA Agent</div>
+            <ul>
+              <li>Navega la web de la marca con Playwright</li>
+              <li>Extrae voz, pilares, vocabulario, CTAs y audiencia</li>
+              <li>Usa Google Search para contexto adicional</li>
+              <li>Genera <code>brand-dna.md</code> (se guarda localmente)</li>
+              <li><em>Condicional:</em> se omite si ya existe el DNA</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="pf-arrow">›</div>
+
+        <!-- Researcher -->
+        <div class="pf-node" style="--ac:#38bdf8;--ac-glow:rgba(56,189,248,0.2)" onclick="toggle(this)">
+          <div class="pf-icon">🔍</div>
+          <div class="pf-label">Researcher</div>
+          <div class="pf-model">Gemini 3 Flash</div>
+          <div class="pf-dot"></div>
+          <div class="pf-detail">
+            <div class="pf-detail-title">🔍 SEO Researcher Agent</div>
+            <ul>
+              <li>Analiza los 10 primeros resultados del SERP</li>
+              <li>Extrae entidades, headings, conteo de palabras</li>
+              <li>Identifica brechas de contenido vs competidores</li>
+              <li>Sugiere links internos del inventario de URLs</li>
+              <li>Recomienda etapa del funnel (TOFU/MOFU/BOFU)</li>
+              <li>Genera el <em>research brief</em> completo</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="pf-arrow">›</div>
+
+        <!-- QA Loop -->
+        <div class="pf-loop-wrap">
+          <div class="pf-loop-label">🔁 LOOP &mdash; MÁX 3 ITERACIONES</div>
+
+          <!-- Copywriter -->
+          <div class="pf-node" style="--ac:#fb923c;--ac-glow:rgba(251,146,60,0.2)" onclick="toggle(this)">
+            <div class="pf-icon">✍️</div>
+            <div class="pf-label">Copywriter</div>
+            <div class="pf-model">Claude Haiku / Sonnet</div>
+            <div class="pf-dot"></div>
+            <div class="pf-detail">
+              <div class="pf-detail-title">✍️ Copywriter Agent</div>
+              <ul>
+                <li>Recibe research brief + Brand DNA + feedback del QA</li>
+                <li>Usa el Skill Pack de redacción (SKILL.md + referencias)</li>
+                <li>Adapta la estructura al tipo de página (blog, landing, etc.)</li>
+                <li>Inserta links internos automáticamente</li>
+                <li>Output: HTML semántico con JSON-LD o Markdown + frontmatter</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="pf-arrow">›</div>
+
+          <!-- QA decision -->
+          <div class="pf-score">
+            <span class="pf-score-badge pf-score-pass">≥ 88 pts ✔</span>
+            <span class="pf-score-arrow">↕</span>
+            <span class="pf-score-badge pf-score-fail">&lt; 88 pts ↺</span>
+          </div>
+
+          <div class="pf-arrow">›</div>
+
+          <!-- QA Agent -->
+          <div class="pf-node" style="--ac:#22c55e;--ac-glow:rgba(34,197,94,0.2)" onclick="toggle(this)">
+            <div class="pf-icon">🧪</div>
+            <div class="pf-label">QA Agent</div>
+            <div class="pf-model">Gemini 3 Flash</div>
+            <div class="pf-dot"></div>
+            <div class="pf-detail">
+              <div class="pf-detail-title">🧪 QA Agent (110 pts)</div>
+              <ul>
+                <li>🏢 Brand Coherence &mdash; 20 pts</li>
+                <li>⚠️ Ethical Claims &mdash; 15 pts</li>
+                <li>🔍 SEO Technical &mdash; 20 pts</li>
+                <li>📝 Content Quality &mdash; 20 pts</li>
+                <li>✅ Factual Accuracy &mdash; 10 pts</li>
+                <li>🇦🇷 Language Quality &mdash; 10 pts</li>
+                <li>💡 Information Gain &mdash; 5 pts</li>
+                <li>🤖 Humanization &mdash; 10 pts</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <div class="pf-arrow">›</div>
+
+        <!-- Save -->
+        <div class="pf-node" style="--ac:#f59e0b;--ac-glow:rgba(245,158,11,0.2)" onclick="toggle(this)">
+          <div class="pf-icon">💾</div>
+          <div class="pf-label">Output</div>
+          <div class="pf-model">brands/&lt;marca&gt;/</div>
+          <div class="pf-dot"></div>
+          <div class="pf-detail">
+            <div class="pf-detail-title">💾 Archivos generados</div>
+            <ul>
+              <li><code>brand-dna.md</code></li>
+              <li>Contenido HTML o Markdown con frontmatter YAML</li>
+              <li>Reporte de QA detallado (<code>__qa_report.md</code>)</li>
+              <li>Nombrado automático por fecha, versión y keyword</li>
+            </ul>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <script>
+    function toggle(node) {
+      const wasOpen = node.classList.contains('open');
+      document.querySelectorAll('.pf-node.open').forEach(n => n.classList.remove('open'));
+      if (!wasOpen) node.classList.add('open');
+    }
+    document.addEventListener('click', function(e) {
+      if (!e.target.closest('.pf-node')) {
+        document.querySelectorAll('.pf-node.open').forEach(n => n.classList.remove('open'));
+      }
+    });
+    </script>
+    """
+    st.components.v1.html(flow_html, height=260, scrolling=False)
+
+    # Auth box
+    st.markdown("""
+    <div class="auth-box">
+      <div class="auth-title">🔐 Acceso restringido</div>
+      <div class="auth-note">
+        Para acceder al pipeline de generación de contenido SEO, necesitas una contraseña de acceso.
+        Si no la tienes, contáctate con <strong>Nicolás Alonso</strong>.
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Actual Streamlit password input
+    _, col_pw, _ = st.columns([1, 2, 1])
+    with col_pw:
+        pw_input = st.text_input(
+            "Contraseña de acceso",
+            type="password",
+            placeholder="Ingresa la contraseña...",
+            key="pw_input",
+        )
+        btn_enter = st.button("🔓 Acceder al pipeline", use_container_width=True, type="primary")
+        if btn_enter:
+            if _APP_PASSWORD and pw_input == _APP_PASSWORD:
+                st.session_state["authenticated"] = True
+                st.rerun()
+            elif not _APP_PASSWORD:
+                # No password configured — let anyone in (dev mode)
+                st.session_state["authenticated"] = True
+                st.rerun()
+            else:
+                st.error("❌ Contraseña incorrecta. Contáctate con Nicolás Alonso.")
+        st.markdown('<div class="auth-hint">💬 No tienes acceso? Escríbele a Nicolás Alonso.</div>', unsafe_allow_html=True)
+
+
+# Render landing page if not authenticated
+if not st.session_state["authenticated"]:
+    _show_landing_page()
+    st.stop()
 
 # C4: Validate API keys at app startup so the user gets immediate feedback
 # instead of waiting 30+ minutes for an auth error mid-pipeline.
@@ -743,11 +1226,20 @@ with content_right:
         help="Si se omite, el agente sugiere automáticamente hasta 3 links del inventario.",
     )
 
+# One-run-only limit per session
+_run_used = bool(st.session_state.get("run_used", False))
+
+if _run_used:
+    st.warning(
+        "⚠️ Esta sesión ya ejecutó el pipeline una vez. "
+        "Para volver a ejecutarlo, recarga la página / reinicia la sesión."
+    )
+
 submitted = st.button(
     "🚀 Ejecutar pipeline",
     type="primary",
     use_container_width=True,
-    disabled=is_running,
+    disabled=is_running or _run_used,
 )
 
 
@@ -880,6 +1372,7 @@ if submitted:
     st.session_state.run_state.update(next_state)
     reader = _start_process_log_pump(proc, st.session_state.run_state)
     st.session_state.run_state["reader_thread"] = reader
+    st.session_state["run_used"] = True  # One-run-only: mark session as consumed
     st.rerun()
 
 # Monitor in-flight process state
